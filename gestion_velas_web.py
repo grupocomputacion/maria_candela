@@ -2,6 +2,7 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 from datetime import datetime
+import io
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Velas Candela Pro - Cloud", layout="wide")
@@ -16,7 +17,7 @@ def safe_float(val):
         return 0.0
 
 def conectar():
-    # check_same_thread=False es vital para evitar el DatabaseError en la nube
+    # check_same_thread=False es vital para evitar el OperationalError en la nube
     return sqlite3.connect("gestion_velas.db", check_same_thread=False)
 
 def inicializar_db():
@@ -40,20 +41,22 @@ def inicializar_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, fecha TEXT, producto TEXT, 
         cantidad REAL, total_venta REAL, metodo_pago TEXT)''')
     
-    # MIGRACIÓN SEGURA (Tu lógica original)
-    for col, tipo in [("precio_v2", "REAL DEFAULT 0"), ("margen1", "REAL DEFAULT 100"), ("margen2", "REAL DEFAULT 100")]:
-        try: cursor.execute(f"ALTER TABLE productos ADD COLUMN {col} {tipo}")
-        except: pass
+    # MIGRACIÓN SEGURA (Tu lógica original para no romper la DB)
+    columnas_nuevas = [("precio_v2", "REAL DEFAULT 0"), ("margen1", "REAL DEFAULT 100"), ("margen2", "REAL DEFAULT 100")]
+    for col, tipo in columnas_nuevas:
+        try:
+            cursor.execute(f"ALTER TABLE productos ADD COLUMN {col} {tipo}")
+        except sqlite3.OperationalError:
+            pass # Ya existe
         
     conn.commit()
     conn.close()
 
-# Inicialización forzada
 inicializar_db()
 
 # --- INTERFAZ ---
 st.sidebar.title("🕯️ Menú Gestión")
-menu = st.sidebar.radio("Ir a:", ["📦 Stock", "🧪 Recetas y Costeo Pro", "🚀 Registrar Venta", "📊 Caja"])
+menu = st.sidebar.radio("Ir a:", ["📦 Stock", "🧪 Gestión de Recetas", "🚀 Ventas", "📊 Reportes y Excel"])
 
 # ---------------------------------------------------------
 # 1. STOCK
@@ -62,102 +65,103 @@ if menu == "📦 Stock":
     st.subheader("Gestión de Inventario")
     conn = conectar()
     f1, f2 = st.columns(2)
-    tipo_f = f1.selectbox("Tipo", ["TODOS", "Insumo", "Final", "Packaging"])
-    busq = f2.text_input("Buscar por nombre...")
+    t_f = f1.selectbox("Tipo", ["TODOS", "Insumo", "Final", "Packaging"])
+    b_f = f2.text_input("Buscar por nombre...")
     
     query = "SELECT id, nombre, tipo, stock_actual, costo_u, precio_v, precio_v2 FROM productos WHERE 1=1"
     params = []
-    if tipo_f != "TODOS":
-        query += " AND UPPER(tipo) = UPPER(?)"; params.append(tipo_f)
-    if busq:
-        query += " AND UPPER(nombre) LIKE UPPER(?)"; params.append(f"%{busq}%")
+    if t_f != "TODOS":
+        query += " AND UPPER(tipo) = UPPER(?)"; params.append(t_f)
+    if b_f:
+        query += " AND UPPER(nombre) LIKE UPPER(?)"; params.append(f"%{b_f}%")
     
     df = pd.read_sql_query(query, conn, params=params)
     st.dataframe(df, use_container_width=True, hide_index=True)
 
 # ---------------------------------------------------------
-# 2. RECETAS Y COSTEO (LÓGICA ORIGINAL COMPLETA)
+# 2. RECETAS (LÓGICA 100% ESPEJO DEL LOCAL)
 # ---------------------------------------------------------
-elif menu == "🧪 Recetas y Costeo Pro":
-    st.subheader("Fórmulas, Costos y Márgenes (M1/M2)")
+elif menu == "🧪 Gestión de Recetas":
+    st.subheader("Calculadora de Producción y Precios de Venta")
     conn = conectar()
     
-    # Cargamos listas usando fetchall para evitar errores de tipo
+    # Obtenemos datos para los selectores
     finales = conn.execute("SELECT id, nombre, margen1, margen2 FROM productos WHERE UPPER(tipo) = 'FINAL'").fetchall()
     insumos = conn.execute("SELECT id, nombre, costo_u FROM productos WHERE UPPER(tipo) = 'INSUMO'").fetchall()
 
     if finales:
-        col1, col2 = st.columns([1, 2])
+        col_i, col_d = st.columns([1, 2])
         
-        with col1:
-            nombres_f = [f[1] for f in finales]
-            v_sel = st.selectbox("Seleccionar Vela Final", nombres_f)
-            
-            # Datos de la vela (id, nombre, margen1, margen2)
+        with col_i:
+            v_sel = st.selectbox("Elegir Vela", [f[1] for f in finales])
             v_data = [f for f in finales if f[1] == v_sel][0]
             id_v_final = v_data[0]
             m1_db = safe_float(v_data[2])
             m2_db = safe_float(v_data[3])
             
-            with st.form("add_i"):
+            with st.form("add_ins"):
                 st.write("### Vincular Materia Prima")
-                nombres_i = [i[1] for i in insumos]
-                i_sel = st.selectbox("Insumo", nombres_i) if nombres_i else st.error("Sin insumos")
+                i_sel = st.selectbox("Insumo", [i[1] for i in insumos]) if insumos else st.error("Sin insumos")
                 i_cant = st.number_input("Cantidad", min_value=0.0)
                 if st.form_submit_button("Añadir"):
-                    id_ins = [i for i in insumos if i[1] == i_sel][0][0]
-                    conn.execute("INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (?,?,?)", (id_v_final, id_ins, i_cant))
+                    id_i = [i for i in insumos if i[1] == i_sel][0][0]
+                    conn.execute("INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (?,?,?)", (id_v_final, id_i, i_cant))
                     conn.commit()
                     st.success("Añadido")
                     st.rerun()
 
-        with col2:
+        with col_d:
             st.write(f"### Composición Guardada: {v_sel}")
-            # Query robusta basada en tu código original
-            query_receta = f"""
-                SELECT r.id, i.nombre, r.cantidad, i.costo_u, (r.cantidad * i.costo_u)
-                FROM recetas r 
-                INNER JOIN productos i ON r.id_insumo = i.id
+            # Query espejo de tu local
+            query_rec = f"""
+                SELECT r.id, p.nombre, r.cantidad, p.costo_u, (r.cantidad * p.costo_u)
+                FROM recetas AS r INNER JOIN productos AS p ON r.id_insumo = p.id
                 WHERE r.id_final = {id_v_final}
             """
-            try:
-                rows = conn.execute(query_receta).fetchall()
-                if rows:
-                    df_rec = pd.DataFrame(rows, columns=["ID", "Insumo", "Cantidad", "Costo U", "Subtotal"])
-                    st.table(df_rec[["Insumo", "Cantidad", "Costo U", "Subtotal"]])
-                    
-                    # Cálculo de costo total
-                    costo_fabricacion = sum(safe_float(r[4]) for r in rows)
-                    
-                    st.divider()
-                    st.write("### 💰 Determinación de Precios de Venta")
-                    cm1, cm2 = st.columns(2)
-                    m1_input = cm1.number_input("Margen 1 %", value=m1_db)
-                    m2_input = cm2.number_input("Margen 2 %", value=m2_db)
-                    
-                    p1 = costo_fabricacion * (1 + m1_input/100)
-                    p2 = costo_fabricacion * (1 + m2_input/100)
-                    
-                    st.metric("COSTO TOTAL COMPONENTES", f"$ {costo_fabricacion:,.2f}")
-                    cm1.metric("PRECIO L1 (Sugerido)", f"$ {p1:,.2f}")
-                    cm2.metric("PRECIO L2 (Sugerido)", f"$ {p2:,.2f}")
-                    
-                    if st.button("💾 GUARDAR PRECIOS EN STOCK"):
-                        conn.execute("UPDATE productos SET precio_v=?, precio_v2=?, margen1=?, margen2=?, costo_u=? WHERE id=?", 
-                                    (p1, p2, m1_input, m2_input, costo_fabricacion, id_v_final))
-                        conn.commit()
-                        st.success("Precios e historial de costos actualizados")
-                else:
-                    st.info("No se encontraron componentes cargados para esta vela.")
-            except:
-                st.error("Error al leer receta. Asegurese de que los insumos tengan costo asignado.")
+            rows = conn.execute(query_rec).fetchall()
+            
+            if rows:
+                df_rec = pd.DataFrame(rows, columns=["ID", "Materia Prima", "Cantidad", "Costo U", "Subtotal"])
+                st.table(df_rec[["Materia Prima", "Cantidad", "Costo U", "Subtotal"]])
+                
+                # Sumatoria de costos usando safe_float
+                costo_total = sum(safe_float(r[4]) for r in rows)
+                
+                st.divider()
+                st.write("### 💰 Determinación de Precios de Venta")
+                cm1, cm2 = st.columns(2)
+                m1_in = cm1.number_input("Margen 1 %", value=m1_db)
+                m2_in = cm2.number_input("Margen 2 %", value=m2_db)
+                
+                p1 = costo_total * (1 + m1_in/100)
+                p2 = costo_total * (1 + m2_in/100)
+                
+                st.metric("COSTO TOTAL", f"$ {costo_total:,.2f}")
+                cm1.metric("PRECIO L1", f"$ {p1:,.2f}")
+                cm2.metric("PRECIO L2", f"$ {p2:,.2f}")
+                
+                if st.button("💾 GUARDAR EN INVENTARIO"):
+                    conn.execute("UPDATE productos SET precio_v=?, precio_v2=?, margen1=?, margen2=?, costo_u=? WHERE id=?", 
+                                (p1, p2, m1_in, m2_in, costo_total, id_v_final))
+                    conn.commit()
+                    st.success("Precios actualizados")
+
+                if st.button("🚀 REGISTRAR PRODUCCIÓN"):
+                    cur = conn.cursor()
+                    for _, r in df_rec.iterrows():
+                        cur.execute("UPDATE productos SET stock_actual = stock_actual - ? WHERE nombre = ?", (r['Cantidad'], r['Materia Prima']))
+                    cur.execute("UPDATE productos SET stock_actual = stock_actual + 1 WHERE id = ?", (id_v_final,))
+                    conn.commit()
+                    st.success("Stock actualizado")
+            else:
+                st.info("No hay receta cargada.")
     else:
-        st.warning("Cargá un producto 'Final' para gestionar recetas.")
+        st.warning("Cargá un producto 'Final' en Stock primero.")
 
 # ---------------------------------------------------------
 # 3. VENTAS
 # ---------------------------------------------------------
-elif menu == "🚀 Registrar Venta":
+elif menu == "🚀 Ventas":
     st.subheader("Registrar Venta")
     conn = conectar()
     velas = conn.execute("SELECT nombre, precio_v, precio_v2 FROM productos WHERE UPPER(tipo) = 'FINAL'").fetchall()
@@ -166,11 +170,35 @@ elif menu == "🚀 Registrar Venta":
             v_n = st.selectbox("Vela", [v[0] for v in velas])
             v_c = st.number_input("Cantidad", min_value=1.0)
             v_l = st.radio("Lista", ["L1 (Minorista)", "L2 (Mayorista)"])
-            p_sel = [v for v in velas if v[0] == v_n][0]
-            p_r = safe_float(p_sel[1] if "1" in v_l else p_sel[2])
+            p_s = [v for v in velas if v[0] == v_n][0]
+            p_r = safe_float(p_s[1] if "1" in v_l else p_s[2])
             if st.form_submit_button("Cerrar Venta"):
                 conn.execute("INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta) VALUES (?,?,?,?)", 
                             (datetime.now().strftime("%Y-%m-%d %H:%M"), v_n, v_c, p_r * v_c))
                 conn.execute("UPDATE productos SET stock_actual = stock_actual - ? WHERE nombre = ?", (v_c, v_n))
                 conn.commit()
                 st.success("Venta guardada.")
+
+# ---------------------------------------------------------
+# 4. REPORTES Y EXCEL (LÓGICA ORIGINAL)
+# ---------------------------------------------------------
+elif menu == "📊 Reportes y Excel":
+    st.subheader("Historial de Caja")
+    conn = conectar()
+    df_v = pd.read_sql_query("SELECT fecha, producto, total_venta FROM historial_ventas ORDER BY fecha DESC", conn)
+    
+    if not df_v.empty:
+        st.metric("Total Recaudado", f"$ {df_v['total_venta'].sum():,.2f}")
+        st.dataframe(df_v, use_container_width=True)
+        
+        # Función espejo de exportar_caja
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            df_v.to_excel(writer, index=False, sheet_name='Ventas')
+        
+        st.download_button(
+            label="📊 Exportar a Excel",
+            data=output.getvalue(),
+            file_name=f"caja_velas_{datetime.now().strftime('%d_%m')}.xlsx",
+            mime="application/vnd.ms-excel"
+        )
