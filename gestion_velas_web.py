@@ -14,24 +14,23 @@ def conectar():
 def inicializar_db():
     conn = conectar()
     cursor = conn.cursor()
-    # 1. Tabla de Productos
+    # 1. Tabla de Productos (Mantiene columnas originales)
     cursor.execute('''CREATE TABLE IF NOT EXISTS productos (
         id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT, tipo TEXT, 
         unidad TEXT, stock_actual REAL DEFAULT 0, costo_u REAL DEFAULT 0, 
         precio_v REAL DEFAULT 0, precio_v2 REAL DEFAULT 0, 
         margen1 REAL DEFAULT 100, margen2 REAL DEFAULT 100)''')
     
-    # 2. Tabla de RECETAS (Relación muchos a muchos)
+    # 2. Tabla de RECETAS (Vínculo Insumo -> Final)
     cursor.execute('''CREATE TABLE IF NOT EXISTS recetas (
         id INTEGER PRIMARY KEY AUTOINCREMENT, id_final INTEGER, 
         id_insumo INTEGER, cantidad REAL)''')
     
-    # 3. Historial de Ventas
+    # 3. Historiales de Movimientos
     cursor.execute('''CREATE TABLE IF NOT EXISTS historial_ventas (
         id INTEGER PRIMARY KEY AUTOINCREMENT, fecha TEXT, producto TEXT, 
         cantidad REAL, total_venta REAL, metodo_pago TEXT)''')
     
-    # 4. Historial de Compras/Gastos
     cursor.execute('''CREATE TABLE IF NOT EXISTS historial_compras (
         id INTEGER PRIMARY KEY AUTOINCREMENT, fecha TEXT, item_nombre TEXT, 
         cantidad REAL, costo_total REAL, metodo_pago TEXT)''')
@@ -49,9 +48,10 @@ menu = st.sidebar.radio("Ir a:", ["📦 Stock e Inventario", "🧪 Gestión de R
 # 1. STOCK E INVENTARIO
 # ---------------------------------------------------------
 if menu == "📦 Stock e Inventario":
-    st.subheader("Gestión de Existencias")
+    st.subheader("Gestión de Existencias y Precios")
     
     f1, f2 = st.columns(2)
+    # Filtro Case-Insensitive
     tipo_f = f1.selectbox("Filtrar por Tipo", ["TODOS", "Insumo", "Final", "Packaging"])
     busq = f2.text_input("Buscar por nombre")
     
@@ -73,25 +73,26 @@ if menu == "📦 Stock e Inventario":
             n_tip = c2.selectbox("Categoría", ["Insumo", "Final", "Packaging"])
             n_stk = c1.number_input("Stock Inicial", value=0.0)
             n_cst = c2.number_input("Costo Unitario", value=0.0)
-            n_m1 = c1.number_input("Margen L1 %", value=100.0)
-            n_m2 = c2.number_input("Margen L2 %", value=70.0)
+            n_m1 = c1.number_input("Margen L1 % (Minorista)", value=100.0)
+            n_m2 = c2.number_input("Margen L2 % (Mayorista)", value=70.0)
             
-            if st.form_submit_button("Guardar"):
+            if st.form_submit_button("Guardar Producto"):
                 p1 = n_cst * (1 + n_m1/100)
                 p2 = n_cst * (1 + n_m2/100)
                 conn.execute("""INSERT INTO productos (nombre, tipo, stock_actual, costo_u, margen1, margen2, precio_v, precio_v2) 
                              VALUES (?,?,?,?,?,?,?,?)""", (n_nom, n_tip, n_stk, n_cst, n_m1, n_m2, p1, p2))
                 conn.commit()
-                st.success("Guardado con éxito.")
+                st.success("Producto guardado correctamente.")
                 st.rerun()
 
 # ---------------------------------------------------------
-# 2. GESTIÓN DE RECETAS (LA FUNCIONALIDAD CLAVE)
+# 2. GESTIÓN DE RECETAS (Blindado contra errores de SQL)
 # ---------------------------------------------------------
 elif menu == "🧪 Gestión de Recetas":
     st.subheader("Configuración de Fórmulas y Producción")
     conn = conectar()
     
+    # Selectores dinámicos
     velas_finales = pd.read_sql_query("SELECT id, nombre FROM productos WHERE UPPER(tipo) = 'FINAL'", conn)
     todos_insumos = pd.read_sql_query("SELECT id, nombre FROM productos WHERE UPPER(tipo) = 'INSUMO'", conn)
 
@@ -104,78 +105,90 @@ elif menu == "🧪 Gestión de Recetas":
             
             with st.form("form_receta"):
                 st.write("### Agregar Insumo a la Receta")
-                i_sel = st.selectbox("Insumo", todos_insumos['nombre'].tolist())
-                i_cant = st.number_input("Cantidad (Gr/Unidad)", min_value=0.0, format="%.2f")
+                i_sel = st.selectbox("Elegir Insumo", todos_insumos['nombre'].tolist())
+                i_cant = st.number_input("Cantidad (Gramos/Unidad)", min_value=0.0, format="%.2f")
                 if st.form_submit_button("Vincular a Receta"):
                     id_i = int(todos_insumos[todos_insumos['nombre'] == i_sel]['id'].values[0])
                     conn.execute("INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (?,?,?)", (id_v_final, id_i, i_cant))
                     conn.commit()
-                    st.success("Añadido.")
+                    st.success("Insumo añadido a la fórmula.")
 
         with c_rec2:
-            st.write(f"### Componentes de {v_sel}")
-            df_receta = pd.read_sql_query(f"""
+            st.write(f"### Composición de Receta: {v_sel}")
+            # BLINDAJE: Solo consultamos si id_v_final es válido
+            query_receta = f"""
                 SELECT r.id, i.nombre as Insumo, r.cantidad as Cantidad, i.costo_u, (r.cantidad * i.costo_u) as Subtotal
                 FROM recetas r JOIN productos i ON r.id_insumo = i.id
-                WHERE r.id_final = {id_v_final}""", conn)
+                WHERE r.id_final = {id_v_final}"""
+            
+            df_receta = pd.read_sql_query(query_receta, conn)
             
             if not df_receta.empty:
                 st.table(df_receta)
-                st.metric("Costo Real de Fabricación", f"$ {df_receta['Subtotal'].sum():,.2f}")
+                costo_u = df_receta['Subtotal'].sum()
+                st.metric("Costo Real de Producción", f"$ {costo_u:,.2f}")
                 
-                # --- FUNCIÓN DE PRODUCCIÓN ---
-                cant_fabricar = st.number_input("Unidades a producir", min_value=1, value=1)
-                if st.button("🚀 REGISTRAR PRODUCCIÓN (Baja de Insumos)"):
+                # --- LÓGICA DE PRODUCCIÓN ---
+                cant_fab = st.number_input("Cantidad a fabricar", min_value=1, value=1)
+                if st.button("🚀 REGISTRAR PRODUCCIÓN (Baja automática de Stock)"):
                     cur = conn.cursor()
                     for _, row in df_receta.iterrows():
-                        cur.execute("UPDATE productos SET stock_actual = stock_actual - ? WHERE nombre = ?", (row['Cantidad'] * cant_fabricar, row['Insumo']))
-                    cur.execute("UPDATE productos SET stock_actual = stock_actual + ? WHERE id = ?", (cant_fabricar, id_v_final))
+                        # Descontar insumos del stock
+                        cur.execute("UPDATE productos SET stock_actual = stock_actual - ? WHERE nombre = ?", (row['Cantidad'] * cant_fab, row['Insumo']))
+                    # Sumar producto final al stock
+                    cur.execute("UPDATE productos SET stock_actual = stock_actual + ? WHERE id = ?", (cant_fab, id_v_final))
                     conn.commit()
-                    st.success("Producción impactada: Stock de insumos descontado.")
+                    st.success(f"Producción exitosa: +{cant_fab} {v_sel} en stock.")
             else:
-                st.info("Aún no definiste una receta para este producto.")
+                st.info("Esta vela aún no tiene una receta cargada. Use el formulario de la izquierda.")
     else:
-        st.warning("Cargá productos 'Finales' en Stock para armar recetas.")
+        st.warning("Primero debe cargar productos de categoría 'Final' en la pestaña de Stock.")
 
 # ---------------------------------------------------------
-# 3. VENTAS
+# 3. VENTAS (Lista 1 y Lista 2)
 # ---------------------------------------------------------
 elif menu == "🚀 Registrar Venta":
-    st.subheader("Venta Directa")
+    st.subheader("Punto de Venta")
     conn = conectar()
     velas = pd.read_sql_query("SELECT nombre, precio_v, precio_v2 FROM productos WHERE UPPER(tipo) = 'FINAL'", conn)
     
     if not velas.empty:
         with st.form("vta_form"):
-            v_nom = st.selectbox("Producto", velas['nombre'].tolist())
+            v_nom = st.selectbox("Seleccionar Producto", velas['nombre'].tolist())
             v_cant = st.number_input("Cantidad", min_value=1.0)
-            v_lista = st.radio("Lista de Precio", ["Lista 1 (Minorista)", "Lista 2 (Mayorista)"])
+            v_lista = st.radio("Lista de Precios", ["Lista 1 (Minorista)", "Lista 2 (Mayorista)"])
             
+            # Sugerencia de precio automático
             p_ref = velas[velas['nombre'] == v_nom]['precio_v' if "1" in v_lista else 'precio_v2'].values[0]
-            v_total = st.number_input("Total cobrado $", value=float(p_ref * v_cant))
+            v_monto = st.number_input("Total a cobrar $", value=float(p_ref * v_cant))
             
-            if st.form_submit_button("Confirmar Venta"):
+            if st.form_submit_button("Finalizar Venta"):
                 cur = conn.cursor()
                 cur.execute("INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta) VALUES (?,?,?,?)",
-                         (datetime.now().strftime("%Y-%m-%d %H:%M"), v_nom, v_cant, v_total))
+                         (datetime.now().strftime("%Y-%m-%d %H:%M"), v_nom, v_cant, v_monto))
                 cur.execute("UPDATE productos SET stock_actual = stock_actual - ? WHERE nombre = ?", (v_cant, v_nom))
                 conn.commit()
-                st.success("Venta registrada.")
+                st.success("Venta registrada y stock actualizado.")
     else:
-        st.error("No hay productos 'Finales' disponibles.")
+        st.error("No hay productos 'Finales' disponibles para la venta.")
 
 # ---------------------------------------------------------
-# 4. REPORTES
+# 4. REPORTES Y CAJA
 # ---------------------------------------------------------
 elif menu == "📊 Caja y Reportes":
-    st.subheader("Historial de Movimientos")
+    st.subheader("Análisis de Movimientos")
     conn = conectar()
     df_v = pd.read_sql_query("SELECT fecha, producto as Detalle, total_venta as Monto FROM historial_ventas", conn)
     
     if not df_v.empty:
-        st.metric("Total de Ventas", f"$ {df_v['Monto'].sum():,.2f}")
+        col_m1, col_m2 = st.columns(2)
+        col_m1.metric("Total de Ingresos", f"$ {df_v['Monto'].sum():,.2f}")
+        col_m2.metric("Ventas Realizadas", len(df_v))
+        
         st.dataframe(df_v, use_container_width=True)
         
         # Gráfico dinámico para el iPad
-        fig = px.pie(df_v, values='Monto', names='Detalle', title="Distribución de Ventas")
+        fig = px.bar(df_v, x='fecha', y='Monto', title="Evolución de Ventas Diarias")
         st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No hay movimientos registrados en el historial de ventas.")
