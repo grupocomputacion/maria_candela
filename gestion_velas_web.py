@@ -6,16 +6,16 @@ from datetime import datetime
 import io
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Velas Candela - Sistema Integral", layout="wide")
+st.set_page_config(page_title="Velas Candela - Gestión Pro Cloud", layout="wide")
 
-# --- CONEXIÓN Y MIGRACIÓN DE DB ---
+# --- CONEXIÓN Y MANTENIMIENTO DE DB ---
 def conectar():
     return sqlite3.connect("gestion_velas.db", check_same_thread=False)
 
 def inicializar_db():
     conn = conectar()
     cursor = conn.cursor()
-    # Tabla de productos con todas las columnas originales
+    # Tabla de productos con TODAS las columnas originales
     cursor.execute('''CREATE TABLE IF NOT EXISTS productos (
         id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT, tipo TEXT, 
         unidad TEXT, stock_actual REAL DEFAULT 0, stock_minimo REAL DEFAULT 0,
@@ -31,9 +31,9 @@ def inicializar_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, fecha TEXT, item_nombre TEXT, 
         cantidad REAL, costo_total REAL, metodo_pago TEXT)''')
     
-    # Migración de columnas por si la DB es vieja
-    columnas = [("precio_v2", "REAL DEFAULT 0"), ("margen1", "REAL DEFAULT 100"), ("margen2", "REAL DEFAULT 100")]
-    for col, tipo in columnas:
+    # Parche de migración automática por si la DB existe pero es vieja
+    columnas_extra = [("precio_v2", "REAL DEFAULT 0"), ("margen1", "REAL DEFAULT 100"), ("margen2", "REAL DEFAULT 100")]
+    for col, tipo in columnas_extra:
         try: cursor.execute(f"ALTER TABLE productos ADD COLUMN {col} {tipo}")
         except: pass
     
@@ -43,168 +43,165 @@ def inicializar_db():
 inicializar_db()
 
 # --- INTERFAZ ---
-st.title("🕯️ Gestión de Velas Candela - Pro")
+st.title("🕯️ Velas Candela - Sistema Integral")
 
 menu = st.sidebar.selectbox("MENÚ PRINCIPAL", [
-    "📦 Stock e Insumos", 
+    "📦 Inventario y Precios", 
     "💰 Calculadora de Costos", 
     "🚀 Registrar Venta", 
-    "🛒 Registrar Gasto/Compra",
+    "🛒 Compras y Gastos",
     "📊 Reportes y Caja"
 ])
 
 # ---------------------------------------------------------
-# 1. STOCK E INSUMOS (Equivalente a Pestaña Stock)
+# 1. INVENTARIO Y PRECIOS (M1, M2, L1, L2)
 # ---------------------------------------------------------
-if menu == "📦 Stock e Insumos":
-    st.subheader("Gestión de Inventario")
+if menu == "📦 Inventario y Precios":
+    st.subheader("Gestión de Stock y Listas de Precios")
     
-    col1, col2 = st.columns([1, 2])
+    col_form, col_tabla = st.columns([1, 3])
     
-    with col1:
+    with col_form:
         st.write("### Alta / Edición")
-        with st.form("form_prod"):
+        with st.form("form_producto"):
             nombre = st.text_input("Nombre del Artículo")
-            tipo = st.selectbox("Tipo", ["Insumo", "Vela Terminada", "Packaging"])
-            unidad = st.selectbox("Unidad", ["Gr", "Unidad", "Ml", "Kg"])
-            stock = st.number_input("Stock Actual", min_value=0.0)
-            costo = st.number_input("Costo Unitario $", min_value=0.0)
+            tipo = st.selectbox("Categoría", ["Insumo", "Vela Terminada", "Packaging"])
+            uni = st.selectbox("Unidad", ["Gr", "Unidad", "Ml", "Kg"])
+            stk = st.number_input("Stock Actual", min_value=0.0)
+            cst = st.number_input("Costo Unitario $", min_value=0.0)
+            m1 = st.number_input("Margen Lista 1 %", value=100.0)
+            m2 = st.number_input("Margen Lista 2 %", value=70.0)
+            
+            p1 = cst * (1 + m1/100)
+            p2 = cst * (1 + m2/100)
+            
             if st.form_submit_button("Guardar Producto"):
                 conn = conectar()
-                conn.execute("INSERT INTO productos (nombre, tipo, unidad, stock_actual, costo_u) VALUES (?,?,?,?,?)",
-                            (nombre, tipo, unidad, stock, costo))
+                conn.execute("""INSERT INTO productos 
+                             (nombre, tipo, unidad, stock_actual, costo_u, margen1, margen2, precio_v, precio_v2) 
+                             VALUES (?,?,?,?,?,?,?,?,?)""", 
+                             (nombre, tipo, uni, stk, cst, m1, m2, p1, p2))
                 conn.commit()
-                st.success("Guardado correctamente")
+                st.success("Producto registrado")
                 st.rerun()
 
-    with col2:
+    with col_tabla:
         conn = conectar()
-        df = pd.read_sql_query("SELECT id, nombre, tipo, stock_actual, unidad, costo_u FROM productos", conn)
-        st.dataframe(df, use_container_width=True)
+        df_p = pd.read_sql_query("""SELECT id, nombre, tipo, stock_actual as Stock, costo_u as 'Costo $', 
+                                   margen1 as 'M1 %', precio_v as 'Lista 1 $',
+                                   margen2 as 'M2 %', precio_v2 as 'Lista 2 $' FROM productos""", conn)
+        st.dataframe(df_p, use_container_width=True)
         
-        # Eliminar registro
         del_id = st.number_input("ID a eliminar", min_value=1, step=1)
-        if st.button("🗑️ Eliminar Seleccionado"):
+        if st.button("🗑️ Eliminar Producto"):
             conn.execute("DELETE FROM productos WHERE id=?", (del_id,))
             conn.commit()
             st.rerun()
 
 # ---------------------------------------------------------
-# 2. CALCULADORA DE COSTOS (Lógica de márgenes M1 y M2)
+# 2. CALCULADORA DE COSTOS (Lógica de Recetas)
 # ---------------------------------------------------------
 elif menu == "💰 Calculadora de Costos":
-    st.subheader("Calculadora de Producción y Precios")
+    st.subheader("Calculadora Dinámica de Producción")
     conn = conectar()
-    insumos = pd.read_sql_query("SELECT nombre, costo_u, unidad FROM productos WHERE tipo='Insumo'", conn)
+    insumos = pd.read_sql_query("SELECT nombre, costo_u FROM productos WHERE tipo='Insumo'", conn)
     
     if not insumos.empty:
-        # Replicamos la tabla dinámica del código original
-        num_filas = st.slider("Cantidad de componentes", 1, 10, 3)
-        costo_receta = 0.0
+        n_filas = st.slider("¿Cuántos componentes lleva la receta?", 1, 10, 3)
+        costo_total = 0.0
         
-        for i in range(num_filas):
+        for i in range(n_filas):
             c1, c2, c3 = st.columns([2, 1, 1])
-            ins = c1.selectbox(f"Componente {i+1}", ["Seleccionar..."] + insumos['nombre'].tolist(), key=f"c_{i}")
-            cant = c2.number_input(f"Cantidad", min_value=0.0, key=f"q_{i}")
-            if ins != "Seleccionar...":
-                precio_u = insumos[insumos['nombre'] == ins]['costo_u'].values[0]
-                subtotal = precio_u * cant
-                costo_receta += subtotal
-                c3.write(f"Sub: ${subtotal:,.2f}")
+            sel = c1.selectbox(f"Componente {i+1}", ["-"] + insumos['nombre'].tolist(), key=f"sel_{i}")
+            cant = c2.number_input("Cantidad", min_value=0.0, key=f"q_{i}")
+            if sel != "-":
+                precio_u = insumos[insumos['nombre'] == sel]['costo_u'].values[0]
+                sub = precio_u * cant
+                costo_total += sub
+                c3.write(f"Sub: ${sub:,.2f}")
         
         st.divider()
-        col_res, col_m1, col_m2 = st.columns(3)
-        
-        m1 = col_m1.number_input("Margen Minorista % (M1)", value=100)
-        m2 = col_m2.number_input("Margen Mayorista % (M2)", value=70)
-        
-        precio1 = costo_receta * (1 + m1/100)
-        precio2 = costo_receta * (1 + m2/100)
-        
-        col_res.metric("COSTO TOTAL", f"$ {costo_receta:,.2f}")
-        col_m1.metric("PRECIO M1 (Minorista)", f"$ {precio1:,.2f}")
-        col_m2.metric("PRECIO M2 (Mayorista)", f"$ {precio2:,.2f}")
+        st.metric("COSTO TOTAL DE PRODUCCIÓN", f"$ {costo_total:,.2f}")
     else:
-        st.warning("Cargue insumos en el Stock para usar la calculadora.")
+        st.warning("Debe cargar Insumos en el Inventario primero.")
 
 # ---------------------------------------------------------
-# 3. REGISTRAR VENTA (Descuento de Stock)
+# 3. REGISTRAR VENTA
 # ---------------------------------------------------------
 elif menu == "🚀 Registrar Venta":
-    st.subheader("Venta de Productos")
+    st.subheader("Venta Directa")
     conn = conectar()
-    velas = pd.read_sql_query("SELECT nombre, stock_actual, costo_u FROM productos WHERE tipo='Vela Terminada'", conn)
+    velas = pd.read_sql_query("SELECT nombre, stock_actual FROM productos WHERE tipo='Vela Terminada'", conn)
     
-    with st.form("venta"):
-        prod = st.selectbox("Seleccionar Vela", velas['nombre'].tolist())
-        cant = st.number_input("Cantidad", min_value=1.0)
-        pago = st.selectbox("Cuenta/Método", ["Efectivo", "Transferencia", "Mercado Pago"])
-        monto = st.number_input("Monto total cobrado $", min_value=0.0)
+    with st.form("form_venta"):
+        v_sel = st.selectbox("Producto", velas['nombre'].tolist())
+        v_cant = st.number_input("Cantidad", min_value=1.0)
+        v_monto = st.number_input("Monto total cobrado $", min_value=0.0)
+        v_pago = st.selectbox("Método de Pago", ["Efectivo", "Transferencia", "Mercado Pago"])
         
-        if st.form_submit_button("Finalizar Venta"):
+        if st.form_submit_button("Registrar Venta"):
             c = conn.cursor()
             fecha = datetime.now().strftime("%Y-%m-%d %H:%M")
             c.execute("INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta, metodo_pago) VALUES (?,?,?,?,?)",
-                     (fecha, prod, cant, monto, pago))
-            c.execute("UPDATE productos SET stock_actual = stock_actual - ? WHERE nombre = ?", (cant, prod))
+                     (fecha, v_sel, v_cant, v_monto, v_pago))
+            c.execute("UPDATE productos SET stock_actual = stock_actual - ? WHERE nombre = ?", (v_cant, v_sel))
             conn.commit()
-            st.success("Venta registrada y stock actualizado.")
+            st.success("Venta e inventario actualizados.")
 
 # ---------------------------------------------------------
-# 4. REGISTRAR GASTO (Nueva funcionalidad integrada)
+# 4. COMPRAS Y GASTOS (Caja Saliente)
 # ---------------------------------------------------------
-elif menu == "🛒 Registrar Gasto/Compra":
-    st.subheader("Registro de Egresos / Compras de Insumos")
-    with st.form("gasto"):
-        item = st.text_input("Detalle del gasto o Insumo comprado")
+elif menu == "🛒 Compras y Gastos":
+    st.subheader("Registro de Gastos y Compras de Insumos")
+    with st.form("form_gasto"):
+        item = st.text_input("Detalle (Insumo o Gasto)")
         cant = st.number_input("Cantidad", min_value=0.0)
         costo = st.number_input("Costo Total $", min_value=0.0)
-        pago = st.selectbox("Pagado desde", ["Efectivo", "Transferencia", "Mercado Pago"])
+        pago = st.selectbox("Pagar desde:", ["Efectivo", "Transferencia", "Mercado Pago"])
         
-        if st.form_submit_button("Registrar Gasto"):
+        if st.form_submit_button("Registrar Movimiento"):
             conn = conectar()
             fecha = datetime.now().strftime("%Y-%m-%d %H:%M")
             conn.execute("INSERT INTO historial_compras (fecha, item_nombre, cantidad, costo_total, metodo_pago) VALUES (?,?,?,?,?)",
                         (fecha, item, cant, costo, pago))
             conn.commit()
-            st.success("Gasto/Compra registrado en caja.")
+            st.success("Gasto registrado en el historial de caja.")
 
 # ---------------------------------------------------------
-# 5. REPORTES Y CAJA (Exportación a Excel)
+# 5. REPORTES Y EXPORTACIÓN
 # ---------------------------------------------------------
 elif menu == "📊 Reportes y Caja":
-    st.subheader("Análisis de Caja e Historial")
+    st.subheader("Análisis de Rendimiento")
     conn = conectar()
     
-    # Unificamos ventas y compras para la caja
     df_v = pd.read_sql_query("SELECT fecha, 'VENTA' as Tipo, producto as Detalle, total_venta as Monto, metodo_pago as Cuenta FROM historial_ventas", conn)
-    df_c = pd.read_sql_query("SELECT fecha, 'MOV/COMP' as Tipo, item_nombre as Detalle, costo_total as Monto, metodo_pago as Cuenta FROM historial_compras", conn)
+    df_c = pd.read_sql_query("SELECT fecha, 'GASTO' as Tipo, item_nombre as Detalle, costo_total as Monto, metodo_pago as Cuenta FROM historial_compras", conn)
     
-    caja_total = pd.concat([df_v, df_c]).sort_values(by="fecha", ascending=False)
+    caja_final = pd.concat([df_v, df_c]).sort_values(by="fecha", ascending=False)
     
-    col_m1, col_m2, col_m3 = st.columns(3)
+    # Métricas
+    m1, m2, m3 = st.columns(3)
     ingresos = df_v['Monto'].sum()
     egresos = df_c['Monto'].sum()
-    col_m1.metric("Ingresos Totales", f"$ {ingresos:,.2f}")
-    col_m2.metric("Egresos Totales", f"$ {egresos:,.2f}")
-    col_m3.metric("Saldo Caja", f"$ {(ingresos - egresos):,.2f}", delta=float(ingresos-egresos))
+    m1.metric("Ingresos (Ventas)", f"$ {ingresos:,.2f}")
+    m2.metric("Egresos (Gastos)", f"$ {egresos:,.2f}")
+    m3.metric("Saldo Final", f"$ {(ingresos - egresos):,.2f}", delta=float(ingresos-egresos))
     
-    st.write("### Últimos Movimientos")
-    st.dataframe(caja_total, use_container_width=True)
-
-    # Gráfico de ventas
+    # Gráfico
     if not df_v.empty:
-        fig = px.pie(df_v, values='Monto', names='Detalle', title="Distribución de Ventas por Producto")
+        fig = px.pie(df_v, values='Monto', names='Detalle', title="Ventas por Producto")
         st.plotly_chart(fig, use_container_width=True)
+    
+    st.dataframe(caja_final, use_container_width=True)
 
-    # Botón de exportación a Excel
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-        caja_total.to_excel(writer, index=False, sheet_name='Caja')
+    # Exportación a Excel
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        caja_final.to_excel(writer, index=False, sheet_name='Caja')
     
     st.download_button(
-        label="📥 Descargar Caja en Excel",
-        data=buffer,
-        file_name=f"caja_velas_{datetime.now().strftime('%d_%m')}.xlsx",
+        label="📥 Exportar Caja Completa a Excel",
+        data=output.getvalue(),
+        file_name=f"caja_velas_{datetime.now().strftime('%Y%m%d')}.xlsx",
         mime="application/vnd.ms-excel"
     )
