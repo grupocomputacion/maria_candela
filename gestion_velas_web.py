@@ -1,33 +1,33 @@
 import streamlit as st
 import sqlite3
 import pandas as pd
-import plotly.express as px
 from datetime import datetime
 import io
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Velas Candela Pro - Cloud", layout="wide")
 
+# --- GESTIÓN DE BASE DE DATOS ---
 def conectar():
-    # check_same_thread=False es vital para evitar el DatabaseError en la nube
+    # check_same_thread=False evita errores de concurrencia en la nube
     return sqlite3.connect("gestion_velas.db", check_same_thread=False)
 
 def inicializar_db():
     conn = conectar()
     cursor = conn.cursor()
-    # 1. Tabla de Productos
+    # Tabla de Productos original
     cursor.execute('''CREATE TABLE IF NOT EXISTS productos (
         id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT, tipo TEXT, 
         unidad TEXT, stock_actual REAL DEFAULT 0, costo_u REAL DEFAULT 0, 
         precio_v REAL DEFAULT 0, precio_v2 REAL DEFAULT 0, 
         margen1 REAL DEFAULT 100, margen2 REAL DEFAULT 100)''')
     
-    # 2. Tabla de RECETAS
+    # Tabla de RECETAS
     cursor.execute('''CREATE TABLE IF NOT EXISTS recetas (
         id INTEGER PRIMARY KEY AUTOINCREMENT, id_final INTEGER, 
         id_insumo INTEGER, cantidad REAL)''')
     
-    # 3. Historial de Ventas
+    # Historial de Ventas
     cursor.execute('''CREATE TABLE IF NOT EXISTS historial_ventas (
         id INTEGER PRIMARY KEY AUTOINCREMENT, fecha TEXT, producto TEXT, 
         cantidad REAL, total_venta REAL, metodo_pago TEXT)''')
@@ -35,12 +35,11 @@ def inicializar_db():
     conn.commit()
     conn.close()
 
-# Ejecutar inicialización al arranque
 inicializar_db()
 
 # --- INTERFAZ ---
-st.sidebar.title("🕯️ Menú Pro")
-menu = st.sidebar.radio("Ir a:", ["📦 Stock", "🧪 Recetas y Producción", "💰 Calculadora", "🚀 Ventas"])
+st.sidebar.title("🕯️ Velas Candela Pro")
+menu = st.sidebar.radio("Ir a:", ["📦 Stock", "🧪 Recetas y Producción", "🚀 Ventas", "📊 Reportes"])
 
 # ---------------------------------------------------------
 # 1. STOCK
@@ -49,11 +48,11 @@ if menu == "📦 Stock":
     st.subheader("Gestión de Inventario")
     conn = conectar()
     
-    f1, f2 = st.columns(2)
-    tipo_f = f1.selectbox("Tipo", ["TODOS", "Insumo", "Final", "Packaging"])
-    busq = f2.text_input("Buscar por nombre")
+    col_f1, col_f2 = st.columns(2)
+    tipo_f = col_f1.selectbox("Filtrar por Tipo", ["TODOS", "Insumo", "Final", "Packaging"])
+    busq = col_f2.text_input("Buscar por nombre")
     
-    query = "SELECT id, nombre, tipo, stock_actual as Stock, costo_u as 'Costo U$', precio_v as 'Lista 1' FROM productos WHERE 1=1"
+    query = "SELECT id, nombre, tipo, stock_actual as Stock, costo_u as 'Costo U$' FROM productos WHERE 1=1"
     params = []
     if tipo_f != "TODOS":
         query += " AND UPPER(tipo) = UPPER(?)"; params.append(tipo_f)
@@ -63,12 +62,13 @@ if menu == "📦 Stock":
     df_p = pd.read_sql_query(query, conn, params=params)
     st.dataframe(df_p, use_container_width=True, hide_index=True)
 
-    with st.expander("➕ Nuevo Producto / Insumo"):
-        with st.form("nuevo_p"):
-            n_nom = st.text_input("Nombre")
-            n_tip = st.selectbox("Categoría", ["Insumo", "Final", "Packaging"])
-            n_stk = st.number_input("Stock Inicial", value=0.0)
-            n_cst = st.number_input("Costo Unitario", value=0.0)
+    with st.expander("➕ Cargar Nuevo Artículo"):
+        with st.form("form_nuevo"):
+            c1, c2 = st.columns(2)
+            n_nom = c1.text_input("Nombre")
+            n_tip = c2.selectbox("Categoría", ["Insumo", "Final", "Packaging"])
+            n_stk = c1.number_input("Stock Inicial", value=0.0)
+            n_cst = c2.number_input("Costo Unitario", value=0.0)
             if st.form_submit_button("Guardar"):
                 conn.execute("INSERT INTO productos (nombre, tipo, stock_actual, costo_u) VALUES (?,?,?,?)", (n_nom, n_tip, n_stk, n_cst))
                 conn.commit()
@@ -76,97 +76,95 @@ if menu == "📦 Stock":
                 st.rerun()
 
 # ---------------------------------------------------------
-# 2. RECETAS (BLINDADO CONTRA DATABASE ERROR)
+# 2. RECETAS (SOLUCIÓN AL ERROR DE DATABASE)
 # ---------------------------------------------------------
 elif menu == "🧪 Recetas y Producción":
-    st.subheader("Configuración de Recetas y Fabricación")
+    st.subheader("Configuración de Recetas")
     conn = conectar()
     
-    velas_finales = pd.read_sql_query("SELECT id, nombre FROM productos WHERE UPPER(tipo) = 'FINAL'", conn)
-    todos_insumos = pd.read_sql_query("SELECT id, nombre FROM productos WHERE UPPER(tipo) = 'INSUMO'", conn)
+    # Traemos listas de forma segura
+    df_finales = pd.read_sql_query("SELECT id, nombre FROM productos WHERE UPPER(tipo) = 'FINAL'", conn)
+    df_insumos = pd.read_sql_query("SELECT id, nombre FROM productos WHERE UPPER(tipo) = 'INSUMO'", conn)
 
-    if not velas_finales.empty:
-        c_rec1, c_rec2 = st.columns([1, 2])
+    if not df_finales.empty:
+        c1, c2 = st.columns([1, 2])
         
-        with c_rec1:
-            v_sel = st.selectbox("Seleccionar Vela Final", velas_finales['nombre'].tolist())
-            id_v_final = int(velas_finales[velas_finales['nombre'] == v_sel]['id'].values[0])
+        with c1:
+            v_sel = st.selectbox("Seleccionar Vela", df_finales['nombre'].tolist())
+            id_v_final = int(df_finales[df_finales['nombre'] == v_sel]['id'].values[0])
             
-            with st.form("add_ins_rec"):
-                st.write("### Agregar Insumo a la Receta")
-                ins_n = st.selectbox("Insumo", todos_insumos['nombre'].tolist()) if not todos_insumos.empty else st.error("No hay insumos")
-                ins_q = st.number_input("Cantidad (Gr/Ml)", min_value=0.0, format="%.2f")
-                if st.form_submit_button("Vincular"):
-                    id_i = int(todos_insumos[todos_insumos['nombre'] == ins_n]['id'].values[0])
-                    conn.execute("INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (?,?,?)", (id_v_final, id_i, ins_q))
-                    conn.commit()
-                    st.success("Añadido.")
-
-        with c_rec2:
-            st.write(f"### Composición de {v_sel}")
-            # PROTECCIÓN: Bloque Try/Except para evitar el crash de base de datos
-            try:
-                df_receta = pd.read_sql_query(f"""
-                    SELECT r.id, i.nombre as Insumo, r.cantidad as Cantidad, i.costo_u, (r.cantidad * i.costo_u) as Subtotal
-                    FROM recetas r JOIN productos i ON r.id_insumo = i.id
-                    WHERE r.id_final = {id_v_final}""", conn)
-                
-                if not df_receta.empty:
-                    st.table(df_receta)
-                    st.metric("Costo de Producción", f"$ {df_receta['Subtotal'].sum():,.2f}")
-                    
-                    if st.button("🚀 REGISTRAR PRODUCCIÓN"):
-                        cur = conn.cursor()
-                        for _, row in df_receta.iterrows():
-                            # Descontar stock
-                            cur.execute("UPDATE productos SET stock_actual = stock_actual - ? WHERE nombre = ?", (row['Cantidad'], row['Insumo']))
-                        cur.execute("UPDATE productos SET stock_actual = stock_actual + 1 WHERE id = ?", (id_v_final,))
+            with st.form("vincular_insumo"):
+                st.write("### Añadir Insumo a la Fórmula")
+                if not df_insumos.empty:
+                    i_sel = st.selectbox("Insumo", df_insumos['nombre'].tolist())
+                    i_cant = st.number_input("Cantidad (Gr/Ml)", min_value=0.0, format="%.2f")
+                    if st.form_submit_button("Vincular"):
+                        id_i = int(df_insumos[df_insumos['nombre'] == i_sel]['id'].values[0])
+                        conn.execute("INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (?,?,?)", (id_v_final, id_i, i_cant))
                         conn.commit()
-                        st.success("Producción exitosa: Stock actualizado.")
+                        st.success("Añadido.")
                 else:
-                    st.info("Esta vela no tiene receta.")
-            except Exception as e:
-                st.error("Error al cargar receta. Verifique la base de datos.")
+                    st.warning("Cargá insumos en Stock primero.")
+
+        with c2:
+            st.write(f"### Composición: {v_sel}")
+            # PROTECCIÓN: Solo consultamos si id_v_final es válido y existe en recetas
+            query_receta = f"""
+                SELECT r.id, i.nombre as Insumo, r.cantidad as Cantidad, i.costo_u, (r.cantidad * i.costo_u) as Subtotal
+                FROM recetas r JOIN productos i ON r.id_insumo = i.id
+                WHERE r.id_final = {id_v_final}"""
+            
+            df_receta = pd.read_sql_query(query_receta, conn)
+            
+            if not df_receta.empty:
+                st.table(df_receta)
+                st.metric("Costo de Fabricación Unitario", f"$ {df_receta['Subtotal'].sum():,.2f}")
+                
+                # Botón de Producción
+                if st.button("🚀 REGISTRAR PRODUCCIÓN (+1 Stock)"):
+                    cur = conn.cursor()
+                    for _, row in df_receta.iterrows():
+                        # Restar de insumos
+                        cur.execute("UPDATE productos SET stock_actual = stock_actual - ? WHERE nombre = ?", (row['Cantidad'], row['Insumo']))
+                    # Sumar al producto final
+                    cur.execute("UPDATE productos SET stock_actual = stock_actual + 1 WHERE id = ?", (id_v_final,))
+                    conn.commit()
+                    st.success(f"Stock de {v_sel} actualizado e insumos descontados.")
+            else:
+                st.info("No hay una receta guardada para esta vela.")
     else:
-        st.warning("Debe cargar productos de categoría 'Final' primero.")
+        st.warning("Debe cargar productos de categoría 'Final' en el Stock primero.")
 
 # ---------------------------------------------------------
-# 3. CALCULADORA (Manual)
-# ---------------------------------------------------------
-elif menu == "💰 Calculadora":
-    st.subheader("Cálculo Manual de Costos")
-    conn = conectar()
-    insumos_db = pd.read_sql_query("SELECT nombre, costo_u FROM productos WHERE UPPER(tipo) = 'INSUMO'", conn)
-    
-    if not insumos_db.empty:
-        n = st.number_input("Insumos a sumar", 1, 10, 3)
-        total_m = 0.0
-        for i in range(n):
-            cx1, cx2 = st.columns(2)
-            n_i = cx1.selectbox(f"Insumo {i+1}", ["-"] + insumos_db['nombre'].tolist(), key=f"calc_{i}")
-            q_i = cx2.number_input(f"Cant {i+1}", 0.0, key=f"q_{i}")
-            if n_i != "-":
-                pu = insumos_db[insumos_db['nombre'] == n_i]['costo_u'].values[0]
-                total_m += (pu * q_i)
-        st.divider()
-        st.metric("COSTO TOTAL", f"$ {total_m:,.2f}")
-
-# ---------------------------------------------------------
-# 4. VENTAS
+# 3. VENTAS
 # ---------------------------------------------------------
 elif menu == "🚀 Ventas":
-    st.subheader("Registrar Venta")
+    st.subheader("Registrar Venta Directa")
     conn = conectar()
-    velas = pd.read_sql_query("SELECT nombre, precio_v FROM productos WHERE UPPER(tipo) = 'FINAL'", conn)
-    if not velas.empty:
+    df_velas = pd.read_sql_query("SELECT nombre, precio_v FROM productos WHERE UPPER(tipo) = 'FINAL'", conn)
+    
+    if not df_velas.empty:
         with st.form("vta"):
-            v_nom = st.selectbox("Vela", velas['nombre'].tolist())
-            v_cant = st.number_input("Cantidad", min_value=1.0)
-            v_total = st.number_input("Total cobrado $")
-            if st.form_submit_button("Cerrar Venta"):
-                c = conn.cursor()
-                c.execute("INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta) VALUES (?,?,?,?)",
-                         (datetime.now().strftime("%Y-%m-%d"), v_nom, v_cant, v_total))
-                c.execute("UPDATE productos SET stock_actual = stock_actual - ? WHERE nombre = ?", (v_cant, v_nom))
+            v_n = st.selectbox("Vela", df_velas['nombre'].tolist())
+            v_c = st.number_input("Cantidad", min_value=1.0)
+            v_t = st.number_input("Total cobrado $")
+            if st.form_submit_button("Confirmar Venta"):
+                cur = conn.cursor()
+                cur.execute("INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta) VALUES (?,?,?,?)",
+                         (datetime.now().strftime("%Y-%m-%d"), v_n, v_c, v_t))
+                cur.execute("UPDATE productos SET stock_actual = stock_actual - ? WHERE nombre = ?", (v_c, v_n))
                 conn.commit()
                 st.success("Venta guardada.")
+    else:
+        st.error("No hay productos 'Finales' registrados.")
+
+# ---------------------------------------------------------
+# 4. REPORTES
+# ---------------------------------------------------------
+elif menu == "📊 Reportes":
+    st.subheader("Caja e Historial")
+    conn = conectar()
+    df_h = pd.read_sql_query("SELECT * FROM historial_ventas ORDER BY id DESC", conn)
+    if not df_h.empty:
+        st.metric("Total Facturado", f"$ {df_h['total_venta'].sum():,.2f}")
+        st.dataframe(df_h, use_container_width=True)
