@@ -71,15 +71,16 @@ if menu == "📦 Inventario":
     st.dataframe(df, use_container_width=True, hide_index=True)
 
 # ---------------------------------------------------------
-# 2. RECETAS (SOLUCIÓN DEFINITIVA Y LIMPIA)
+# 2. RECETAS (SOLUCIÓN FINAL BLINDADA)
 # ---------------------------------------------------------
 elif menu == "🧪 Gestión de Recetas":
     st.subheader("Calculadora de Producción y Costeo")
     conn = conectar()
     
-    # Obtenemos datos base
-    finales = conn.execute("SELECT id, nombre, margen1, margen2 FROM productos WHERE UPPER(tipo) = 'FINAL'").fetchall()
-    insumos = conn.execute("SELECT id, nombre, costo_u FROM productos WHERE UPPER(tipo) = 'INSUMO'").fetchall()
+    # Obtenemos datos base usando cursores explícitos
+    cursor = conn.cursor()
+    finales = cursor.execute("SELECT id, nombre, margen1, margen2 FROM productos WHERE UPPER(tipo) = 'FINAL'").fetchall()
+    insumos = cursor.execute("SELECT id, nombre, costo_u FROM productos WHERE UPPER(tipo) = 'INSUMO'").fetchall()
 
     if finales:
         col_izq, col_der = st.columns([1, 2])
@@ -102,49 +103,51 @@ elif menu == "🧪 Gestión de Recetas":
         with col_der:
             st.write(f"### Composición: {v_sel}")
             
-            # QUERY ULTRA-LIMPIA: Sin saltos de línea extraños ni alias ambiguos
-            sql_query = "SELECT r.id, p.nombre, r.cantidad, p.costo_u, (r.cantidad * p.costo_u) FROM recetas r JOIN productos p ON r.id_insumo = p.id WHERE r.id_final = ?"
+            # SQL explícito sin alias complejos para evitar OperationalError
+            sql_receta = """
+                SELECT recetas.id, productos.nombre, recetas.cantidad, productos.costo_u, (recetas.cantidad * productos.costo_u) 
+                FROM recetas 
+                JOIN productos ON recetas.id_insumo = productos.id 
+                WHERE recetas.id_final = ?
+            """
             
-            rows = conn.execute(sql_query, (id_v_f,)).fetchall()
+            cur_r = conn.cursor()
+            rows = cur_r.execute(sql_receta, (id_v_f,)).fetchall()
             
             if rows:
                 df_rec = pd.DataFrame(rows, columns=["ID", "Insumo", "Cantidad", "Costo U", "Subtotal"])
                 st.table(df_rec[["Insumo", "Cantidad", "Costo U", "Subtotal"]])
                 
-                # Sumatoria de la columna Subtotal (índice 4)
                 costo_b = sum(safe_float(r[4]) for r in rows)
                 
                 st.divider()
                 st.write("### 💰 Determinación de Precios de Venta")
                 
-                # Funcionalidad original: elegir cómo calcular
+                # Funcionalidad original: cálculo reversible
                 modo = st.radio("Método de cálculo:", ["Margen %", "Precio Final $"], horizontal=True)
                 c1, c2 = st.columns(2)
                 
                 if modo == "Margen %":
-                    m1 = c1.number_input("Margen L1 %", value=safe_float(v_data[2]), key="m1_input")
-                    m2 = c2.number_input("Margen L2 %", value=safe_float(v_data[3]), key="m2_input")
+                    m1 = c1.number_input("Margen L1 %", value=safe_float(v_data[2]))
+                    m2 = c2.number_input("Margen L2 %", value=safe_float(v_data[3]))
                     p1 = costo_b * (1 + m1/100)
                     p2 = costo_b * (1 + m2/100)
                 else:
-                    # Inversión de fórmula: Precio -> Margen
-                    p1 = c1.number_input("Precio L1 $", value=costo_b * (1 + safe_float(v_data[2])/100), key="p1_input")
-                    p2 = c2.number_input("Precio L2 $", value=costo_b * (1 + safe_float(v_data[3])/100), key="p2_input")
+                    p1 = c1.number_input("Precio L1 $", value=costo_b * (1 + safe_float(v_data[2])/100))
+                    p2 = c2.number_input("Precio L2 $", value=costo_b * (1 + safe_float(v_data[3])/100))
                     m1 = ((p1 / costo_b) - 1) * 100 if costo_b > 0 else 0
                     m2 = ((p2 / costo_b) - 1) * 100 if costo_b > 0 else 0
 
                 st.info(f"Costo Base: ${costo_b:,.2f} | Margen L1: {m1:.1f}% | Margen L2: {m2:.1f}%")
                 
-                if st.button("💾 GUARDAR PRECIOS Y MÁRGENES"):
+                if st.button("💾 GUARDAR PRECIOS EN STOCK"):
                     conn.execute("UPDATE productos SET precio_v=?, precio_v2=?, margen1=?, margen2=?, costo_u=? WHERE id=?", 
                                 (p1, p2, m1, m2, costo_b, id_v_f))
                     conn.commit()
-                    st.success("Precios actualizados en Stock")
+                    st.success("Precios actualizados")
                     st.rerun()
             else:
-                st.info("No hay insumos cargados para esta receta.")
-    else:
-        st.warning("Primero cargá productos de tipo 'Final' en la pestaña de Stock.")
+                st.info("No hay insumos cargados.")
 
 # ---------------------------------------------------------
 # 3. REGISTRO DE COMPRAS (F4 RESTAURADA)
@@ -201,14 +204,15 @@ elif menu == "🚀 Registrar Venta":
         st.warning("No hay productos de tipo 'Final' cargados en el inventario.")
 
 # ---------------------------------------------------------
-# 5. CAJA (F5 RESTAURADA CON EXCEL)
+# 5. CAJA (CON FILTROS Y TOTALIZACIÓN)
 # ---------------------------------------------------------
-elif menu == "📊 Caja y Reportes (F5)":
+elif menu == "📊 Caja":
     st.subheader("Balance de Movimientos")
     conn = conectar()
     
-    c1, c2 = st.columns(2)
-    d1, d2 = c1.date_input("Desde", date(date.today().year, date.today().month, 1)), c2.date_input("Hasta", date.today())
+    col1, col2 = st.columns(2)
+    d1 = col1.date_input("Desde", datetime(datetime.now().year, datetime.now().month, 1))
+    d2 = col2.date_input("Hasta", datetime.now())
     
     df_v = pd.read_sql_query("SELECT fecha, 'VENTA' as Tipo, producto as Detalle, total_venta as Monto FROM historial_ventas", conn)
     df_c = pd.read_sql_query("SELECT fecha, 'COMPRA' as Tipo, item_nombre as Detalle, -costo_total as Monto FROM historial_compras", conn)
@@ -218,9 +222,11 @@ elif menu == "📊 Caja y Reportes (F5)":
     df_filt = df_caja[(df_caja['fecha_dt'] >= d1) & (df_caja['fecha_dt'] <= d2)].sort_values(by="fecha", ascending=False)
     
     if not df_filt.empty:
-        st.metric("SALDO PERÍODO", f"$ {df_filt['Monto'].sum():,.2f}")
+        st.metric("SALDO NETO PERÍODO", f"$ {df_filt['Monto'].sum():,.2f}")
         st.dataframe(df_filt[["fecha", "Tipo", "Detalle", "Monto"]], use_container_width=True)
         
         output = io.BytesIO()
         df_filt.to_excel(output, index=False, engine='openpyxl')
-        st.download_button("📊 Descargar Excel", output.getvalue(), f"caja_{d1}.xlsx")
+        st.download_button("📊 Exportar a Excel", output.getvalue(), f"caja_{d1}.xlsx")
+    else:
+        st.warning("Sin movimientos en estas fechas.")
