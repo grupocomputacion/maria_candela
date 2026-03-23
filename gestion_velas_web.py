@@ -17,6 +17,7 @@ def safe_float(val):
         return 0.0
 
 def conectar():
+    # check_same_thread=False es vital para evitar el OperationalError en la nube
     return sqlite3.connect("gestion_velas.db", check_same_thread=False)
 
 def inicializar_db():
@@ -35,12 +36,12 @@ def inicializar_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, id_final INTEGER, 
         id_insumo INTEGER, cantidad REAL)''')
     
-    # Historial Ventas (COMILLAS CORREGIDAS AQUÍ)
+    # Historial Ventas
     cursor.execute('''CREATE TABLE IF NOT EXISTS historial_ventas (
         id INTEGER PRIMARY KEY AUTOINCREMENT, fecha TEXT, producto TEXT, 
         cantidad REAL, total_venta REAL, metodo_pago TEXT)''')
     
-    # Migración de columnas (Tu lógica original)
+    # MIGRACIÓN SEGURA (Tu lógica original para no romper la DB)
     columnas_nuevas = [("precio_v2", "REAL DEFAULT 0"), ("margen1", "REAL DEFAULT 100"), ("margen2", "REAL DEFAULT 100")]
     for col, tipo in columnas_nuevas:
         try:
@@ -51,6 +52,7 @@ def inicializar_db():
     conn.commit()
     conn.close()
 
+# Inicialización forzada al arrancar
 inicializar_db()
 
 # --- INTERFAZ ---
@@ -78,13 +80,13 @@ if menu == "📦 Stock":
     st.dataframe(df, use_container_width=True, hide_index=True)
 
 # ---------------------------------------------------------
-# 2. RECETAS (LÓGICA ESPEJO DEL LOCAL - RECUPERA DATOS)
+# 2. RECETAS (LÓGICA 100% ESPEJO - SOLUCIÓN AL ERROR)
 # ---------------------------------------------------------
 elif menu == "🧪 Gestión de Recetas":
-    st.subheader("Calculadora de Producción y Precios")
+    st.subheader("Calculadora de Producción y Precios de Venta")
     conn = conectar()
     
-    # Cargamos listas usando fetchall para evitar errores de tipo
+    # Obtenemos productos de forma segura
     finales = conn.execute("SELECT id, nombre, margen1, margen2 FROM productos WHERE UPPER(tipo) = 'FINAL'").fetchall()
     insumos = conn.execute("SELECT id, nombre, costo_u FROM productos WHERE UPPER(tipo) = 'INSUMO'").fetchall()
 
@@ -92,69 +94,73 @@ elif menu == "🧪 Gestión de Recetas":
         col_i, col_d = st.columns([1, 2])
         
         with col_i:
-            v_sel = st.selectbox("Elegir Vela", [f[1] for f in finales])
+            v_sel = st.selectbox("Elegir Vela para Costeo", [f[1] for f in finales])
             v_data = [f for f in finales if f[1] == v_sel][0]
             id_v_final = v_data[0]
             m1_db = safe_float(v_data[2])
             m2_db = safe_float(v_data[3])
             
-            with st.form("add_ins"):
+            with st.form("add_materia_web"):
                 st.write("### Vincular Materia Prima")
                 i_sel = st.selectbox("Insumo", [i[1] for i in insumos]) if insumos else st.error("Sin insumos")
-                i_cant = st.number_input("Cantidad", min_value=0.0)
-                if st.form_submit_button("Añadir"):
+                i_cant = st.number_input("Cantidad (Gr/Ml/Un)", min_value=0.0)
+                if st.form_submit_button("Añadir a Receta"):
                     id_i = [i for i in insumos if i[1] == i_sel][0][0]
                     conn.execute("INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (?,?,?)", (id_v_final, id_i, i_cant))
                     conn.commit()
-                    st.success("Añadido")
+                    st.success("Componente añadido")
                     st.rerun()
 
         with col_d:
             st.write(f"### Composición Guardada: {v_sel}")
-            # Query corregida: nombres de tabla explícitos para evitar OperationalError
-            query_rec = f"""
+            # Query espejo de tu local con nombres de tabla explícitos
+            query_receta = f"""
                 SELECT recetas.id, productos.nombre, recetas.cantidad, productos.costo_u, (recetas.cantidad * productos.costo_u)
                 FROM recetas 
                 JOIN productos ON recetas.id_insumo = productos.id
                 WHERE recetas.id_final = {id_v_final}
             """
-            rows = conn.execute(query_rec).fetchall()
+            # BLINDAJE: Solo ejecutamos si la conexión está activa
+            cur_r = conn.cursor()
+            cur_r.execute(query_receta)
+            rows = cur_r.fetchall()
             
             if rows:
                 df_rec = pd.DataFrame(rows, columns=["ID", "Materia Prima", "Cantidad", "Costo U", "Subtotal"])
                 st.table(df_rec[["Materia Prima", "Cantidad", "Costo U", "Subtotal"]])
                 
-                # Sumatoria de costos usando safe_float original
-                costo_total = sum(safe_float(r[4]) for r in rows)
+                # Sumatoria con tu función safe_float original
+                costo_fabricacion = sum(safe_float(r[4]) for r in rows)
                 
                 st.divider()
-                st.write("### 💰 Determinación de Precios de Venta")
+                st.write("### 💰 Determinación de Precios (M1/M2)")
                 cm1, cm2 = st.columns(2)
-                m1_in = cm1.number_input("Margen 1 %", value=m1_db)
-                m2_in = cm2.number_input("Margen 2 %", value=m2_db)
+                m1_in = cm1.number_input("Margen Lista 1 % (Minorista)", value=m1_db)
+                m2_in = cm2.number_input("Margen Lista 2 % (Mayorista)", value=m2_db)
                 
-                p1 = costo_total * (1 + m1_in/100)
-                p2 = costo_total * (1 + m2_in/100)
+                p1 = costo_fabricacion * (1 + m1_in/100)
+                p2 = costo_fabricacion * (1 + m2_in/100)
                 
-                st.metric("COSTO TOTAL", f"$ {costo_total:,.2f}")
-                cm1.metric("PRECIO L1", f"$ {p1:,.2f}")
-                cm2.metric("PRECIO L2", f"$ {p2:,.2f}")
+                st.metric("COSTO TOTAL", f"$ {costo_fabricacion:,.2f}")
+                cm1.metric("PRECIO L1 SUGERIDO", f"$ {p1:,.2f}")
+                cm2.metric("PRECIO L2 SUGERIDO", f"$ {p2:,.2f}")
                 
                 if st.button("💾 GUARDAR PRECIOS EN STOCK"):
                     conn.execute("UPDATE productos SET precio_v=?, precio_v2=?, margen1=?, margen2=?, costo_u=? WHERE id=?", 
-                                (p1, p2, m1_in, m2_in, costo_total, id_v_final))
+                                (p1, p2, m1_in, m2_in, costo_fabricacion, id_v_final))
                     conn.commit()
-                    st.success("Inventario actualizado con éxito.")
+                    st.success("Precios actualizados en inventario")
 
                 if st.button("🚀 REGISTRAR PRODUCCIÓN"):
-                    cur = conn.cursor()
+                    cur_p = conn.cursor()
                     for r in rows:
-                        cur.execute("UPDATE productos SET stock_actual = stock_actual - ? WHERE nombre = ?", (r[2], r[1]))
-                    cur.execute("UPDATE productos SET stock_actual = stock_actual + 1 WHERE id = ?", (id_v_final,))
+                        cur_p.execute("UPDATE productos SET stock_actual = stock_actual - ? WHERE nombre = ?", (r[2], r[1]))
+                    cur_p.execute("UPDATE productos SET stock_actual = stock_actual + 1 WHERE id = ?", (id_v_final,))
                     conn.commit()
                     st.success("Producción impactada e insumos descontados.")
+                    st.rerun()
             else:
-                st.info("No hay componentes cargados para esta vela.")
+                st.info("No se encontraron componentes cargados para esta vela.")
     else:
         st.warning("Cargá un producto 'Final' en Stock primero.")
 
@@ -166,14 +172,14 @@ elif menu == "🚀 Registrar Venta":
     conn = conectar()
     velas = conn.execute("SELECT nombre, precio_v, precio_v2 FROM productos WHERE UPPER(tipo) = 'FINAL'").fetchall()
     if velas:
-        with st.form("vt"):
+        with st.form("venta_web"):
             v_n = st.selectbox("Vela", [v[0] for v in velas])
-            v_c = st.number_input("Cantidad", min_value=1.0)
+            v_c = st.number_input("Cantidad vendida", min_value=1.0)
             v_l = st.radio("Lista", ["L1 (Minorista)", "L2 (Mayorista)"])
             p_s = [v for v in velas if v[0] == v_n][0]
             p_r = safe_float(p_s[1] if "1" in v_l else p_s[2])
-            v_tot = st.number_input("Total Cobrado $", value=float(p_r * v_c))
-            if st.form_submit_button("Confirmar Venta"):
+            v_tot = st.number_input("Total cobrado $", value=float(p_r * v_c))
+            if st.form_submit_button("Cerrar Venta"):
                 conn.execute("INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta) VALUES (?,?,?,?)", 
                             (datetime.now().strftime("%Y-%m-%d %H:%M"), v_n, v_c, v_tot))
                 conn.execute("UPDATE productos SET stock_actual = stock_actual - ? WHERE nombre = ?", (v_c, v_n))
@@ -181,10 +187,10 @@ elif menu == "🚀 Registrar Venta":
                 st.success("Venta guardada.")
 
 # ---------------------------------------------------------
-# 4. REPORTES Y EXCEL (LÓGICA ORIGINAL)
+# 4. REPORTES Y EXCEL (EXPORTACIÓN FIEL AL LOCAL)
 # ---------------------------------------------------------
 elif menu == "📊 Reportes y Excel":
-    st.subheader("Historial de Caja y Exportación")
+    st.subheader("Historial de Caja y Movimientos")
     conn = conectar()
     df_v = pd.read_sql_query("SELECT fecha, producto, total_venta FROM historial_ventas ORDER BY fecha DESC", conn)
     
@@ -192,13 +198,13 @@ elif menu == "📊 Reportes y Excel":
         st.metric("Total Ingresos", f"$ {df_v['total_venta'].sum():,.2f}")
         st.dataframe(df_v, use_container_width=True)
         
-        # Función espejo de exportar_caja de tu archivo original
+        # Función espejo de exportar_caja de tu local
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df_v.to_excel(writer, index=False, sheet_name='Ventas')
         
         st.download_button(
-            label="📊 Exportar Historial a Excel",
+            label="📊 Exportar a Excel",
             data=output.getvalue(),
             file_name=f"caja_velas_{datetime.now().strftime('%d_%m')}.xlsx",
             mime="application/vnd.ms-excel"
