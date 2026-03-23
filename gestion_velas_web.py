@@ -37,7 +37,6 @@ def inicializar_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, fecha TEXT, producto TEXT, 
         cantidad REAL, total_venta REAL, metodo_pago TEXT)''')
 
-    # Función 4: Soporte para Historial de Compras/Gastos
     cursor.execute('''CREATE TABLE IF NOT EXISTS historial_compras (
         id INTEGER PRIMARY KEY AUTOINCREMENT, fecha TEXT, item_nombre TEXT, 
         cantidad REAL, costo_total REAL, metodo_pago TEXT)''')
@@ -57,9 +56,9 @@ st.sidebar.title("🕯️ Menú Gestión")
 menu = st.sidebar.radio("Ir a:", [
     "📦 Stock e Inventario", 
     "🧪 Gestión de Recetas", 
-    "💰 Registro de Compras (Función 4)", 
+    "💰 Registro de Compras", 
     "🚀 Registrar Venta", 
-    "📊 Caja y Excel (Función 5)"
+    "📊 Caja y Excel"
 ])
 
 # ---------------------------------------------------------
@@ -83,7 +82,7 @@ if menu == "📦 Stock e Inventario":
     st.dataframe(df, use_container_width=True, hide_index=True)
 
 # ---------------------------------------------------------
-# 2. RECETAS (CON BLINDAJE ANTI-ERROR)
+# 2. RECETAS (SOLUCIÓN DEFINITIVA AL OPERATIONALERROR)
 # ---------------------------------------------------------
 elif menu == "🧪 Gestión de Recetas":
     st.subheader("Calculadora de Producción y Costos")
@@ -96,7 +95,7 @@ elif menu == "🧪 Gestión de Recetas":
         with col_i:
             v_sel = st.selectbox("Elegir Vela", [f[1] for f in finales])
             v_data = [f for f in finales if f[1] == v_sel][0]
-            id_v_final = v_data[0]
+            id_v_f = v_data[0]
             
             with st.form("add_ins"):
                 st.write("### Vincular Materia Prima")
@@ -104,16 +103,16 @@ elif menu == "🧪 Gestión de Recetas":
                 i_cant = st.number_input("Cantidad", min_value=0.0)
                 if st.form_submit_button("Añadir"):
                     id_i = [i for i in insumos if i[1] == i_sel][0][0]
-                    conn.execute("INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (?,?,?)", (id_v_final, id_i, i_cant))
+                    conn.execute("INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (?,?,?)", (id_v_f, id_i, i_cant))
                     conn.commit(); st.success("Añadido"); st.rerun()
 
         with col_d:
             st.write(f"### Composición: {v_sel}")
-            # Query blindada con nombres de tabla explícitos
+            # Query blindada usando nombres de tabla explícitos sin alias
             query_rec = f"""
                 SELECT recetas.id, productos.nombre, recetas.cantidad, productos.costo_u, (recetas.cantidad * productos.costo_u)
                 FROM recetas JOIN productos ON recetas.id_insumo = productos.id
-                WHERE recetas.id_final = {id_v_final}
+                WHERE recetas.id_final = {id_v_f}
             """
             rows = conn.execute(query_rec).fetchall()
             if rows:
@@ -130,14 +129,16 @@ elif menu == "🧪 Gestión de Recetas":
                 st.metric("COSTO TOTAL", f"$ {costo_t:,.2f}")
                 cm1.metric("PRECIO L1", f"$ {p1:,.2f}"); cm2.metric("PRECIO L2", f"$ {p2:,.2f}")
                 
-                if st.button("💾 GUARDAR EN STOCK"):
-                    conn.execute("UPDATE productos SET precio_v=?, precio_v2=?, margen1=?, margen2=?, costo_u=? WHERE id=?", (p1, p2, m1_in, m2_in, costo_t, id_v_final))
+                if st.button("💾 GUARDAR PRECIOS EN STOCK"):
+                    conn.execute("UPDATE productos SET precio_v=?, precio_v2=?, margen1=?, margen2=?, costo_u=? WHERE id=?", (p1, p2, m1_in, m2_in, costo_t, id_v_f))
                     conn.commit(); st.success("Precios actualizados")
+            else:
+                st.info("No hay receta cargada.")
 
 # ---------------------------------------------------------
-# 3. REGISTRO DE COMPRAS (FUNCIÓN 4)
+# 3. REGISTRO DE COMPRAS
 # ---------------------------------------------------------
-elif menu == "💰 Registro de Compras (Función 4)":
+elif menu == "💰 Registro de Compras":
     st.subheader("Cargar Insumos y Gastos")
     conn = conectar()
     insumos_db = conn.execute("SELECT id, nombre, costo_u FROM productos WHERE UPPER(tipo) = 'INSUMO'").fetchall()
@@ -145,55 +146,65 @@ elif menu == "💰 Registro de Compras (Función 4)":
     with st.form("compra_form"):
         i_nom = st.selectbox("Insumo Comprado", [i[1] for i in insumos_db])
         i_cant = st.number_input("Cantidad Comprada", min_value=0.0)
-        i_total = st.number_input("Costo Total de la Compra $")
+        i_total = st.number_input("Costo Total $")
         i_pago = st.selectbox("Método de Pago", ["Efectivo", "Mercado Pago", "Transferencia"])
         
         if st.form_submit_button("Confirmar Compra"):
-            # Actualizar Stock y Costo Unitario Promedio
             nuevo_costo_u = i_total / i_cant if i_cant > 0 else 0
             conn.execute("UPDATE productos SET stock_actual = stock_actual + ?, costo_u = ? WHERE nombre = ?", (i_cant, nuevo_costo_u, i_nom))
-            # Registrar en Historial de Compras
             conn.execute("INSERT INTO historial_compras (fecha, item_nombre, cantidad, costo_total, metodo_pago) VALUES (?,?,?,?,?)",
                         (datetime.now().strftime("%Y-%m-%d %H:%M"), i_nom, i_cant, i_total, i_pago))
-            conn.commit(); st.success("Compra registrada y stock actualizado.")
+            conn.commit(); st.success("Stock y costos actualizados."); st.rerun()
 
 # ---------------------------------------------------------
-# 4. VENTAS
+# 4. REGISTRAR VENTA (CORREGIDO: FECHA Y MONTO EDITABLE)
 # ---------------------------------------------------------
 elif menu == "🚀 Registrar Venta":
     st.subheader("Registrar Venta")
     conn = conectar()
     velas = conn.execute("SELECT nombre, precio_v, precio_v2 FROM productos WHERE UPPER(tipo) = 'FINAL'").fetchall()
+    
     if velas:
-        with st.form("vt"):
-            v_n = st.selectbox("Vela", [v[0] for v in velas])
+        with st.form("vt_editable"):
+            c1, c2 = st.columns(2)
+            v_fecha = c1.date_input("Fecha de la venta", datetime.now())
+            v_hora = c2.time_input("Hora", datetime.now().time())
+            v_n = st.selectbox("Producto", [v[0] for v in velas])
             v_c = st.number_input("Cantidad", min_value=1.0)
-            v_l = st.radio("Lista", ["L1 (Minorista)", "L2 (Mayorista)"])
+            v_l = st.radio("Lista de Precios", ["L1 (Minorista)", "L2 (Mayorista)"], horizontal=True)
+            
             p_s = [v for v in velas if v[0] == v_n][0]
-            p_r = safe_float(p_s[1] if "1" in v_l else p_s[2])
-            if st.form_submit_button("Confirmar"):
-                conn.execute("INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta) VALUES (?,?,?,?)", (datetime.now().strftime("%Y-%m-%d %H:%M"), v_n, v_c, p_r * v_c))
+            precio_ref = safe_float(p_s[1] if "1" in v_l else p_s[2])
+            
+            # Campo de monto editable
+            v_monto = st.number_input("Monto Total Cobrado $", value=float(precio_ref * v_c))
+            pago = st.selectbox("Método de Pago", ["Efectivo", "Mercado Pago", "Transferencia"])
+            
+            if st.form_submit_button("Confirmar Venta"):
+                fecha_f = f"{v_fecha.strftime('%Y-%m-%d')} {v_hora.strftime('%H:%M')}"
+                conn.execute("INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta, metodo_pago) VALUES (?,?,?,?,?)", 
+                            (fecha_f, v_n, v_c, v_monto, pago))
                 conn.execute("UPDATE productos SET stock_actual = stock_actual - ? WHERE nombre = ?", (v_c, v_n))
-                conn.commit(); st.success("Venta guardada.")
+                conn.commit(); st.success("Venta guardada exitosamente.")
 
 # ---------------------------------------------------------
-# 5. CAJA Y EXCEL (FUNCIÓN 5)
+# 5. CAJA Y EXCEL (CORREGIDO: MOTOR OPENPYXL)
 # ---------------------------------------------------------
-elif menu == "📊 Caja y Excel (Función 5)":
-    st.subheader("Historial de Caja y Movimientos")
+elif menu == "📊 Caja y Excel":
+    st.subheader("Historial de Movimientos")
     conn = conectar()
     df_v = pd.read_sql_query("SELECT fecha, 'VENTA' as Tipo, producto as Detalle, total_venta as Monto FROM historial_ventas", conn)
     df_c = pd.read_sql_query("SELECT fecha, 'COMPRA' as Tipo, item_nombre as Detalle, -costo_total as Monto FROM historial_compras", conn)
-    
     df_final = pd.concat([df_v, df_c]).sort_values(by="fecha", ascending=False)
     
     if not df_final.empty:
-        st.metric("Saldo Neto de Caja", f"$ {df_final['Monto'].sum():,.2f}")
+        st.metric("Saldo Neto", f"$ {df_final['Monto'].sum():,.2f}")
         st.dataframe(df_final, use_container_width=True)
         
-        # Lógica de Exportación idéntica al local
+        # EXCEL CON MOTOR COMPATIBLE (openpyxl)
         output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df_final.to_excel(writer, index=False, sheet_name='Caja')
+        df_final.to_excel(output, index=False, engine='openpyxl')
         
-        st.download_button(label="📊 Exportar Historial a Excel", data=output.getvalue(), file_name=f"caja_{datetime.now().strftime('%d_%m')}.xlsx", mime="application/vnd.ms-excel")
+        st.download_button(label="📊 Descargar Caja en Excel", data=output.getvalue(), 
+                           file_name=f"caja_{datetime.now().strftime('%d_%m')}.xlsx", 
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
