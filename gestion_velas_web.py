@@ -86,7 +86,7 @@ elif menu == "🧪 Recetas y Costeo":
     st.subheader("Calculadora de Producción y Precios")
     conn = conectar()
     
-    # Obtenemos datos para los selectores
+    # Obtenemos datos para los selectores usando fetchall()
     finales = conn.execute("SELECT id, nombre, margen1, margen2 FROM productos WHERE UPPER(tipo) = 'FINAL'").fetchall()
     insumos = conn.execute("SELECT id, nombre, costo_u FROM productos WHERE UPPER(tipo) = 'INSUMO'").fetchall()
 
