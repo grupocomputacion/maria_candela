@@ -70,9 +70,7 @@ if menu == "📦 Inventario":
     df = pd.read_sql_query("SELECT id, nombre, tipo, stock_actual, costo_u, precio_v, precio_v2 FROM productos", conn)
     st.dataframe(df, use_container_width=True, hide_index=True)
 
-# ---------------------------------------------------------
-# 2. RECETAS (SOLUCIÓN DEFINITIVA)
-# ---------------------------------------------------------
+# --- 2. RECETAS (VERSION 100% BLINDADA) ---
 elif menu == "🧪 Gestión de Recetas":
     st.subheader("Calculadora de Producción y Costeo")
     conn = conectar()
@@ -94,22 +92,35 @@ elif menu == "🧪 Gestión de Recetas":
                 if st.form_submit_button("Vincular"):
                     id_i = [i for i in insumos if i[1] == i_sel][0][0]
                     conn.execute("INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (?,?,?)", (id_v_f, id_i, i_cant))
-                    conn.commit(); st.rerun()
+                    conn.commit()
+                    st.rerun()
 
         with col_der:
             st.write(f"### Composición: {v_sel}")
-            # QUERY BLINDADA: Sin ambigüedad de alias para evitar OperationalError
+            
+            # QUERY CORREGIDA: Usamos alias (r, p) y COALESCE para evitar OperationalError por Nulos
             query_rec = """
-                SELECT recetas.id, productos.nombre, recetas.cantidad, productos.costo_u, (recetas.cantidad * productos.costo_u)
-                FROM recetas 
-                JOIN productos ON recetas.id_insumo = productos.id
-                WHERE recetas.id_final = ?
+                SELECT 
+                    r.id, 
+                    p.nombre, 
+                    COALESCE(r.cantidad, 0), 
+                    COALESCE(p.costo_u, 0), 
+                    (COALESCE(r.cantidad, 0) * COALESCE(p.costo_u, 0)) AS subtotal
+                FROM recetas r
+                INNER JOIN productos p ON r.id_insumo = p.id
+                WHERE r.id_final = ?
             """
-            rows = conn.execute(query_rec, (id_v_f,)).fetchall()
+            
+            # Ejecución explícita para asegurar el fetch
+            cursor_rec = conn.cursor()
+            cursor_rec.execute(query_rec, (id_v_f,))
+            rows = cursor_rec.fetchall()
             
             if rows:
                 df_rec = pd.DataFrame(rows, columns=["ID", "Insumo", "Cantidad", "Costo U", "Subtotal"])
                 st.table(df_rec[["Insumo", "Cantidad", "Costo U", "Subtotal"]])
+                
+                # Usamos la columna calculada en el SQL (índice 4)
                 costo_b = sum(safe_float(r[4]) for r in rows)
                 
                 st.divider()
@@ -121,6 +132,7 @@ elif menu == "🧪 Gestión de Recetas":
                     m2 = c2.number_input("Margen L2 %", value=safe_float(v_data[3]))
                     p1, p2 = costo_b * (1 + m1/100), costo_b * (1 + m2/100)
                 else:
+                    # Ingeniería inversa del margen si el usuario pone el precio
                     p1 = c1.number_input("Precio L1 $", value=costo_b * (1 + safe_float(v_data[2])/100))
                     p2 = c2.number_input("Precio L2 $", value=costo_b * (1 + safe_float(v_data[3])/100))
                     m1 = ((p1 / costo_b) - 1) * 100 if costo_b > 0 else 0
@@ -129,9 +141,13 @@ elif menu == "🧪 Gestión de Recetas":
                 st.info(f"Costo: ${costo_b:,.2f} | Margen L1: {m1:.1f}% | Margen L2: {m2:.1f}%")
                 
                 if st.button("💾 GUARDAR PRECIOS EN STOCK"):
-                    conn.execute("UPDATE productos SET precio_v=?, precio_v2=?, margen1=?, margen2=?, costo_u=? WHERE id=?", 
-                                (p1, p2, m1, m2, costo_b, id_v_f))
-                    conn.commit(); st.success("Inventario actualizado.")
+                    conn.execute("""
+                        UPDATE productos 
+                        SET precio_v=?, precio_v2=?, margen1=?, margen2=?, costo_u=? 
+                        WHERE id=?
+                    """, (p1, p2, m1, m2, costo_b, id_v_f))
+                    conn.commit()
+                    st.success("Inventario actualizado.")
             else:
                 st.info("Sin receta cargada.")
 
