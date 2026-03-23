@@ -70,11 +70,14 @@ if menu == "📦 Inventario":
     df = pd.read_sql_query("SELECT id, nombre, tipo, stock_actual, costo_u, precio_v, precio_v2 FROM productos", conn)
     st.dataframe(df, use_container_width=True, hide_index=True)
 
-# --- 2. RECETAS (VERSION 100% BLINDADA) ---
+# ---------------------------------------------------------
+# 2. RECETAS (SOLUCIÓN DEFINITIVA Y LIMPIA)
+# ---------------------------------------------------------
 elif menu == "🧪 Gestión de Recetas":
     st.subheader("Calculadora de Producción y Costeo")
     conn = conectar()
     
+    # Obtenemos datos base
     finales = conn.execute("SELECT id, nombre, margen1, margen2 FROM productos WHERE UPPER(tipo) = 'FINAL'").fetchall()
     insumos = conn.execute("SELECT id, nombre, costo_u FROM productos WHERE UPPER(tipo) = 'INSUMO'").fetchall()
 
@@ -84,72 +87,64 @@ elif menu == "🧪 Gestión de Recetas":
         with col_izq:
             v_sel = st.selectbox("Elegir Vela", [f[1] for f in finales])
             v_data = [f for f in finales if f[1] == v_sel][0]
-            id_v_f = v_data[0]
+            id_v_f = int(v_data[0])
             
-            with st.form("add_insumo"):
+            with st.form("add_insumo_web"):
                 i_sel = st.selectbox("Insumo", [i[1] for i in insumos])
-                i_cant = st.number_input("Cantidad", min_value=0.0)
+                i_cant = st.number_input("Cantidad", min_value=0.0, format="%.2f")
                 if st.form_submit_button("Vincular"):
                     id_i = [i for i in insumos if i[1] == i_sel][0][0]
                     conn.execute("INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (?,?,?)", (id_v_f, id_i, i_cant))
                     conn.commit()
+                    st.success("Insumo vinculado")
                     st.rerun()
 
         with col_der:
             st.write(f"### Composición: {v_sel}")
             
-            # QUERY CORREGIDA: Usamos alias (r, p) y COALESCE para evitar OperationalError por Nulos
-            query_rec = """
-                SELECT 
-                    r.id, 
-                    p.nombre, 
-                    COALESCE(r.cantidad, 0), 
-                    COALESCE(p.costo_u, 0), 
-                    (COALESCE(r.cantidad, 0) * COALESCE(p.costo_u, 0)) AS subtotal
-                FROM recetas r
-                INNER JOIN productos p ON r.id_insumo = p.id
-                WHERE r.id_final = ?
-            """
+            # QUERY ULTRA-LIMPIA: Sin saltos de línea extraños ni alias ambiguos
+            sql_query = "SELECT r.id, p.nombre, r.cantidad, p.costo_u, (r.cantidad * p.costo_u) FROM recetas r JOIN productos p ON r.id_insumo = p.id WHERE r.id_final = ?"
             
-            # Ejecución explícita para asegurar el fetch
-            cursor_rec = conn.cursor()
-            cursor_rec.execute(query_rec, (id_v_f,))
-            rows = cursor_rec.fetchall()
+            rows = conn.execute(sql_query, (id_v_f,)).fetchall()
             
             if rows:
                 df_rec = pd.DataFrame(rows, columns=["ID", "Insumo", "Cantidad", "Costo U", "Subtotal"])
                 st.table(df_rec[["Insumo", "Cantidad", "Costo U", "Subtotal"]])
                 
-                # Usamos la columna calculada en el SQL (índice 4)
+                # Sumatoria de la columna Subtotal (índice 4)
                 costo_b = sum(safe_float(r[4]) for r in rows)
                 
                 st.divider()
-                modo = st.radio("Cálculo por:", ["Margen %", "Precio Final $"], horizontal=True)
+                st.write("### 💰 Determinación de Precios de Venta")
+                
+                # Funcionalidad original: elegir cómo calcular
+                modo = st.radio("Método de cálculo:", ["Margen %", "Precio Final $"], horizontal=True)
                 c1, c2 = st.columns(2)
                 
                 if modo == "Margen %":
-                    m1 = c1.number_input("Margen L1 %", value=safe_float(v_data[2]))
-                    m2 = c2.number_input("Margen L2 %", value=safe_float(v_data[3]))
-                    p1, p2 = costo_b * (1 + m1/100), costo_b * (1 + m2/100)
+                    m1 = c1.number_input("Margen L1 %", value=safe_float(v_data[2]), key="m1_input")
+                    m2 = c2.number_input("Margen L2 %", value=safe_float(v_data[3]), key="m2_input")
+                    p1 = costo_b * (1 + m1/100)
+                    p2 = costo_b * (1 + m2/100)
                 else:
-                    # Ingeniería inversa del margen si el usuario pone el precio
-                    p1 = c1.number_input("Precio L1 $", value=costo_b * (1 + safe_float(v_data[2])/100))
-                    p2 = c2.number_input("Precio L2 $", value=costo_b * (1 + safe_float(v_data[3])/100))
+                    # Inversión de fórmula: Precio -> Margen
+                    p1 = c1.number_input("Precio L1 $", value=costo_b * (1 + safe_float(v_data[2])/100), key="p1_input")
+                    p2 = c2.number_input("Precio L2 $", value=costo_b * (1 + safe_float(v_data[3])/100), key="p2_input")
                     m1 = ((p1 / costo_b) - 1) * 100 if costo_b > 0 else 0
                     m2 = ((p2 / costo_b) - 1) * 100 if costo_b > 0 else 0
 
-                st.info(f"Costo: ${costo_b:,.2f} | Margen L1: {m1:.1f}% | Margen L2: {m2:.1f}%")
+                st.info(f"Costo Base: ${costo_b:,.2f} | Margen L1: {m1:.1f}% | Margen L2: {m2:.1f}%")
                 
-                if st.button("💾 GUARDAR PRECIOS EN STOCK"):
-                    conn.execute("""
-                        UPDATE productos 
-                        SET precio_v=?, precio_v2=?, margen1=?, margen2=?, costo_u=? 
-                        WHERE id=?
-                    """, (p1, p2, m1, m2, costo_b, id_v_f))
+                if st.button("💾 GUARDAR PRECIOS Y MÁRGENES"):
+                    conn.execute("UPDATE productos SET precio_v=?, precio_v2=?, margen1=?, margen2=?, costo_u=? WHERE id=?", 
+                                (p1, p2, m1, m2, costo_b, id_v_f))
                     conn.commit()
-                    st.success("Inventario actualizado.")
+                    st.success("Precios actualizados en Stock")
+                    st.rerun()
             else:
-                st.info("Sin receta cargada.")
+                st.info("No hay insumos cargados para esta receta.")
+    else:
+        st.warning("Primero cargá productos de tipo 'Final' en la pestaña de Stock.")
 
 # ---------------------------------------------------------
 # 3. REGISTRO DE COMPRAS (F4 RESTAURADA)
