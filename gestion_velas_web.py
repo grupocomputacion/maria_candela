@@ -214,3 +214,80 @@ elif menu == "📊 Caja y Filtros":
         output = io.BytesIO()
         df_f.to_excel(output, index=False, engine='openpyxl')
         st.download_button("📊 Exportar Excel", output.getvalue(), f"caja_{d1}.xlsx")
+
+# ---------------------------------------------------------
+# 6. ANÁLISIS DE RENTABILIDAD POR PRODUCTO (NUEVA MEJORA)
+# ---------------------------------------------------------
+elif menu == "📈 Rentabilidad x Producto":
+    st.subheader("Análisis Acumulado de Ventas y Costos")
+    conn = conectar()
+    
+    # Selectores de fecha para el análisis
+    c1, c2 = st.columns(2)
+    d_ini = c1.date_input("Desde", date(date.today().year, date.today().month, 1), key="rent_desde")
+    d_fin = c2.date_input("Hasta", date.today(), key="rent_hasta")
+
+    # Query para traer ventas con el costo guardado en el momento o el actual
+    # Usamos un JOIN para obtener el costo_u histórico (o actual) del producto
+    query_analisis = """
+        SELECT 
+            v.producto, 
+            SUM(v.cantidad) as cant_total, 
+            SUM(v.total_venta) as venta_total,
+            p.costo_u
+        FROM historial_ventas v
+        JOIN productos p ON v.producto = p.nombre
+        WHERE v.fecha >= ? AND v.fecha <= ?
+        GROUP BY v.producto
+    """
+    
+    # Formateamos fechas para el filtro SQL
+    f_ini_s = d_ini.strftime('%Y-%m-%d 00:00')
+    f_fin_s = d_fin.strftime('%Y-%m-%d 23:59')
+    
+    rows = conn.execute(query_analisis, (f_ini_s, f_fin_s)).fetchall()
+    
+    datos_rentabilidad = []
+    for r in rows:
+        nombre_p = r[0]
+        cant_v = safe_float(r[1])
+        monto_v = safe_float(r[2])
+        costo_unit = safe_float(r[3])
+        
+        costo_acumulado = cant_v * costo_unit
+        diferencia = monto_v - costo_acumulado
+        # Calcular margen real sobre venta
+        margen_real = (diferencia / monto_v * 100) if monto_v > 0 else 0
+        
+        datos_rentabilidad.append({
+            "Producto": nombre_p,
+            "Cant. Vendida": cant_v,
+            "Monto Ventas ($)": monto_v,
+            "Costo Total ($)": costo_acumulado,
+            "Diferencia ($)": diferencia,
+            "Margen Real (%)": f"{margen_real:.1f}%"
+        })
+
+    if datos_rentabilidad:
+        df_rent = pd.DataFrame(datos_rentabilidad)
+        
+        # Métricas destacadas
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Ventas Totales", f"$ {df_rent['Monto Ventas ($)'].sum():,.2f}")
+        m2.metric("Costo Mercadería", f"$ {df_rent['Costo Total ($)'].sum():,.2f}")
+        m3.metric("Ganancia Bruta", f"$ {df_rent['Diferencia ($)'].sum():,.2f}", delta_color="normal")
+
+        # Tabla de análisis
+        st.dataframe(df_rent, use_container_width=True, hide_index=True)
+        
+        # Botón de exportación a Excel (usando openpyxl para estabilidad en Cloud)
+        output = io.BytesIO()
+        df_rent.to_excel(output, index=False, engine='openpyxl')
+        st.download_button(
+            label="📊 Exportar Análisis a Excel",
+            data=output.getvalue(),
+            file_name=f"rentabilidad_{d_ini}_{d_fin}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    else:
+        st.warning("No se registraron ventas en el período seleccionado.")
