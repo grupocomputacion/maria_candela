@@ -176,26 +176,76 @@ elif menu == "💰 Registro de Compras":
                         (datetime.now().strftime("%Y-%m-%d %H:%M"), i_nom, i_can, i_tot, i_pag))
             conn.commit(); st.success("Compra cargada."); st.rerun()
 
-elif menu == "🚀 Registrar Venta":
-    st.subheader("Nueva Venta")
-    conn = conectar()
-    velas = conn.execute("SELECT nombre, precio_v, precio_v2 FROM productos WHERE UPPER(tipo) = 'FINAL'").fetchall()
-    with st.form("f_v"):
-        c1, c2 = st.columns(2)
-        f_v = c1.date_input("Fecha", date.today())
-        h_v = c2.time_input("Hora", datetime.now().time())
-        v_nom = st.selectbox("Producto", [v[0] for v in velas])
-        v_can = st.number_input("Cantidad", min_value=1.0)
-        v_pag = st.selectbox("Pago", ["Efectivo", "Mercado Pago", "Transferencia"])
-        p_ref = [v for v in velas if v[0] == v_nom][0]
-        v_tot = st.number_input("Monto Cobrado $ (Editable)", value=float(p_ref[1] * v_can))
-        if st.form_submit_button("Vender"):
-            f_s = f"{f_v.strftime('%Y-%m-%d')} {h_v.strftime('%H:%M')}"
-            conn.execute("INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta, metodo_pago) VALUES (?,?,?,?,?)",
-                        (f_s, v_nom, v_can, v_tot, v_pag))
-            conn.execute("UPDATE productos SET stock_actual = stock_actual - ? WHERE nombre = ?", (v_can, v_nom))
-            conn.commit(); st.success("Venta registrada.")
+# ==========================================
+# 4. GESTIÓN DE VENTAS - REGISTRO CORREGIDO
+# ==========================================
+elif menu == "🛍️ Registrar Ventas":
+    st.header("Registro de Ventas de Velas")
+    
+    # 1. Traemos los productos disponibles
+    productos = db_query("SELECT id, nombre, precio_sugerido, stock FROM productos WHERE stock > 0")
+    
+    if productos is not None and not productos.empty:
+        with st.form("f_registro_venta", clear_on_submit=False):
+            # Selección de producto
+            prod_sel = st.selectbox(
+                "Seleccione el producto:",
+                productos.index.tolist(),
+                format_func=lambda x: f"{productos.loc[x, 'nombre']} (Stock: {productos.loc[x, 'stock']})"
+            )
+            
+            # Datos de la venta
+            cant = st.number_input("Cantidad:", min_value=1, max_value=int(productos.loc[prod_sel, 'stock']), value=1)
+            
+            # --- EL PUNTO CRÍTICO: PRECIO EDITABLE ---
+            precio_base = float(productos.loc[prod_sel, 'precio_sugerido'])
+            total_sugerido = precio_base * cant
+            
+            st.write(f"Precio unitario sugerido: ${precio_base}")
+            
+            # Usamos una KEY única para que Streamlit mantenga el valor editado por el usuario
+            precio_final_venta = st.number_input(
+                "Monto TOTAL de la venta (Edite si hay descuento o recargo):",
+                min_value=0.0,
+                value=total_sugerido,
+                key="venta_monto_manual",
+                help="Modifique este campo para aplicar descuentos o recargos manuales."
+            )
+            
+            cliente = st.text_input("Nombre del Cliente (Opcional):", key="venta_cliente_key")
+            metodo_pago = st.selectbox("Método de Pago:", ["Efectivo", "Transferencia", "Tarjeta"], key="venta_pago_key")
+            
+            btn_venta = st.form_submit_button("✅ REGISTRAR VENTA")
 
+        # --- PROCESAMIENTO ---
+        if btn_venta:
+            # LEEMOS DIRECTAMENTE DEL SESSION STATE PARA EVITAR SOBREESCRITURA
+            monto_a_grabar = st.session_state.venta_monto_manual
+            id_producto = int(productos.loc[prod_sel, 'id'])
+            nombre_prod = productos.loc[prod_sel, 'nombre']
+
+            try:
+                # 1. Insertar la venta con el monto REAL editado
+                db_query("""
+                    INSERT INTO ventas (id_producto, cantidad, precio_total, cliente, metodo_pago, fecha)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (id_producto, cant, monto_a_grabar, cliente, metodo_pago, date.today()), commit=True)
+
+                # 2. Descontar stock
+                db_query("UPDATE productos SET stock = stock - ? WHERE id = ?", (cant, id_producto), commit=True)
+
+                st.success(f"¡Venta registrada! {nombre_prod} x{cant} por un total de ${monto_a_grabar}")
+                
+                # Limpiamos los campos para una nueva venta
+                if 'venta_monto_manual' in st.session_state:
+                    del st.session_state['venta_monto_manual']
+                
+                st.rerun()
+
+            except Exception as e:
+                st.error(f"Error al registrar la venta: {e}")
+    else:
+        st.warning("No hay productos con stock disponible para vender.")
 # ---------------------------------------------------------
 # 5. CAJA Y EXCEL (RESTAURADO: FILTROS POR FECHA Y TOTALES)
 # ---------------------------------------------------------
