@@ -130,75 +130,66 @@ with st.sidebar.expander("⚠️ Restaurar Sistema"):
         else:
             st.error("Por favor, sube un archivo primero.")    
 
-# ---------------------------------------------------------
-# 1. INVENTARIO Y ALTA (V.9.4 - RESTAURACIÓN ESTÉTICA TOTAL)
-# ---------------------------------------------------------
-if menu == "📦 Inventario y Alta":
-    st.subheader("Gestión de Stock")
+# ==========================================
+# 🛡️ SEGURIDAD: BACKUP Y RESTAURACIÓN
+# ==========================================
+st.sidebar.divider()
+st.sidebar.subheader("Mantenimiento")
+
+# --- FUNCIÓN 1: GENERAR BACKUP ---
+def generar_backup():
     conn = conectar()
-    
-    # Mantenemos tu formulario de alta tal cual
-    with st.expander("➕ DAR DE ALTA NUEVO PRODUCTO / INSUMO"):
-        with st.form("alta_p"):
-            c1, c2 = st.columns(2)
-            n_nom = c1.text_input("Nombre")
-            n_tip = c2.selectbox("Tipo", ["Insumo", "Final", "Herramienta", "Packaging"])
-            n_uni = c1.selectbox("Unidad", ["Gr", "Ml", "Un", "Kg"])
-            n_stk = c2.number_input("Stock Inicial", min_value=0.0)
-            n_min = c1.number_input("Stock Mínimo", min_value=0.0)
-            n_cst = c2.number_input("Costo Unitario", min_value=0.0)
-            if st.form_submit_button("Guardar"):
-                conn.execute("INSERT INTO productos (nombre, tipo, unidad, stock_actual, stock_minimo, costo_u) VALUES (?,?,?,?,?,?)",
-                            (n_nom, n_tip, n_uni, n_stk, n_min, n_cst))
-                conn.commit(); st.success("Registrado"); st.rerun()
-
-    # --- FILTROS DISCRETOS ---
-    df = pd.read_sql_query("SELECT * FROM productos", conn)
-    
-    if not df.empty:
-        # Colocamos los filtros en columnas pequeñas para que no "griten" en la pantalla
-        f1, f2, _ = st.columns([1, 1, 2]) # El tercer espacio vacío empuja los filtros a la izquierda
-        
-        lista_tipos = ["Todos"] + sorted(list(df['tipo'].unique()))
-        filtro_tipo = f1.selectbox("Filtrar Tipo:", lista_tipos, label_visibility="collapsed") # collapsed oculta el texto arriba del combo
-        
-        lista_stock = ["Todos los Stocks", "Con Stock", "Sin Stock", "Bajo Mínimo"]
-        filtro_stock = f2.selectbox("Estado Stock:", lista_stock, label_visibility="collapsed")
-
-        # Aplicamos la lógica de filtrado antes de mostrar la tabla
-        df_mostrar = df.copy()
-        
-        if filtro_tipo != "Todos":
-            df_mostrar = df_mostrar[df_mostrar['tipo'] == filtro_tipo]
-            
-        if filtro_stock == "Con Stock":
-            df_mostrar = df_mostrar[df_mostrar['stock_actual'] > 0]
-        elif filtro_stock == "Sin Stock":
-            df_mostrar = df_mostrar[df_mostrar['stock_actual'] <= 0]
-        elif filtro_stock == "Bajo Mínimo":
-            df_mostrar = df_mostrar[df_mostrar['stock_actual'] < df_mostrar['stock_minimo']]
-
-        # --- TABLA ORIGINAL RECUPERADA ---
-        # No usamos multiselect externo. Usamos el dataframe completo.
-        # Streamlit permite al usuario ocultar columnas y buscar con la lupa nativa (esquina superior derecha de la tabla).
-        st.dataframe(
-            df_mostrar, 
-            use_container_width=True, 
-            hide_index=True,
-            column_config={
-                "costo_u": st.column_config.NumberColumn("Costo U.", format="$ %.2f"),
-                "precio_v": st.column_config.NumberColumn("Precio L1", format="$ %.2f"),
-                "precio_v2": st.column_config.NumberColumn("Precio L2", format="$ %.2f"),
-                "margen1": st.column_config.NumberColumn("Margen 1 %", format="%.1f%%"),
-                "margen2": st.column_config.NumberColumn("Margen 2 %", format="%.1f%%"),
-                "stock_actual": st.column_config.NumberColumn("Stock Actual", format="%.2f")
-            }
-        )
-    else:
-        st.info("No hay productos cargados.")
-    
+    # Leemos todas las tablas importantes
+    tablas = ["productos", "recetas", "historial_ventas", "historial_compras"]
+    backup_data = {}
+    for t in tablas:
+        try:
+            backup_data[t] = pd.read_sql_query(f"SELECT * FROM {t}", conn)
+        except:
+            pass
     conn.close()
+    
+    # Creamos un archivo Excel con múltiples pestañas (una por tabla)
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        for nombre_tabla, df_tabla in backup_data.items():
+            df_tabla.to_excel(writer, sheet_name=nombre_tabla, index=False)
+    return output.getvalue()
 
+# Botón de Descarga
+st.sidebar.download_button(
+    label="📥 Descargar Backup Total",
+    data=generar_backup(),
+    file_name=f"backup_velas_{date.today()}.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    help="Descarga un archivo Excel con todos los datos del sistema."
+)
+
+# --- FUNCIÓN 2: RESTAURAR DESDE BACKUP ---
+with st.sidebar.expander("⚠️ Restaurar Sistema"):
+    st.warning("Al restaurar, se borrarán los datos actuales y se reemplazarán por los del archivo.")
+    archivo_backup = st.file_uploader("Subir archivo de backup (.xlsx)", type=["xlsx"])
+    
+    if archivo_button := st.button("🚀 Iniciar Restauración"):
+        if archivo_backup is not None:
+            try:
+                # Leemos el Excel
+                excel_data = pd.read_excel(archivo_backup, sheet_name=None)
+                conn = conectar()
+                
+                for tabla, df_nueva in excel_data.items():
+                    # Borramos la tabla actual e insertamos la del backup
+                    conn.execute(f"DELETE FROM {tabla}")
+                    df_nueva.to_sql(tabla, conn, if_exists='append', index=False)
+                
+                conn.commit()
+                conn.close()
+                st.success("✅ Sistema restaurado con éxito.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error en la restauración: {e}")
+        else:
+            st.error("Por favor, sube un archivo primero.")
 
 # ---------------------------------------------------------
 # 2. RECETAS Y COSTEO (BLINDADO - SIN JOIN)
