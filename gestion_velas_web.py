@@ -191,6 +191,90 @@ with st.sidebar.expander("⚠️ Restaurar Sistema"):
         else:
             st.error("Por favor, sube un archivo primero.")
 
+
+# ---------------------------------------------------------
+# 1. INVENTARIO Y ALTA (V.9.6 - CIERRE DE BLOQUE CORREGIDO)
+# ---------------------------------------------------------
+if menu == "📦 Inventario y Alta":
+    st.subheader("Gestión de Stock")
+    conn = conectar()
+    
+    # --- COLUMNAS PARA FORMULARIOS ---
+    col_alta, col_ajuste = st.columns(2)
+
+    with col_alta.expander("➕ DAR DE ALTA NUEVO"):
+        with st.form("alta_p"):
+            c1, c2 = st.columns(2)
+            n_nom = c1.text_input("Nombre")
+            n_tip = c2.selectbox("Tipo", ["Insumo", "Final", "Herramienta", "Packaging"])
+            n_uni = c1.selectbox("Unidad", ["Gr", "Ml", "Un", "Kg"])
+            n_stk = c2.number_input("Stock Inicial", min_value=0.0)
+            n_min = c1.number_input("Stock Mínimo", min_value=0.0)
+            n_cst = c2.number_input("Costo Unitario", min_value=0.0)
+            if st.form_submit_button("Guardar Nuevo"):
+                conn.execute("INSERT INTO productos (nombre, tipo, unidad, stock_actual, stock_minimo, costo_u) VALUES (?,?,?,?,?,?)",
+                            (n_nom, n_tip, n_uni, n_stk, n_min, n_cst))
+                conn.commit()
+                st.success("Registrado")
+                st.rerun()
+
+    # --- AJUSTAR STOCK EXISTENTE ---
+    with col_ajuste.expander("🔧 AJUSTAR STOCK (SUMAR/RESTAR)"):
+        prods_data = conn.execute("SELECT id, nombre, stock_actual FROM productos ORDER BY nombre").fetchall()
+        if prods_data:
+            with st.form("form_ajuste_stock"):
+                p_elegido = st.selectbox("Seleccionar Producto", [p[1] for p in prods_data])
+                col_a1, col_a2 = st.columns(2)
+                tipo_mov = col_a1.radio("Movimiento", ["Sumar", "Restar"], horizontal=True)
+                cant_adj = col_a2.number_input("Cantidad", min_value=0.1, step=0.1)
+                
+                if st.form_submit_button("Aplicar Cambio"):
+                    signo = 1 if tipo_mov == "Sumar" else -1
+                    conn.execute("UPDATE productos SET stock_actual = stock_actual + ? WHERE nombre = ?", 
+                                (cant_adj * signo, p_elegido))
+                    conn.commit()
+                    st.success(f"Stock actualizado.")
+                    st.rerun()
+        else:
+            st.info("No hay productos.")
+
+    st.divider()
+
+    # --- CONSULTA Y FILTROS ---
+    df = pd.read_sql_query("SELECT * FROM productos", conn)
+    
+    if not df.empty:
+        f1, f2, _ = st.columns([1, 1, 2])
+        filtro_tipo = f1.selectbox("Filtrar Tipo:", ["Todos"] + sorted(list(df['tipo'].unique())), label_visibility="collapsed")
+        filtro_stock = f2.selectbox("Estado Stock:", ["Todos los Stocks", "Con Stock", "Sin Stock", "Bajo Mínimo"], label_visibility="collapsed")
+
+        df_mostrar = df.copy()
+        if filtro_tipo != "Todos": 
+            df_mostrar = df_mostrar[df_mostrar['tipo'] == filtro_tipo]
+        
+        if filtro_stock == "Con Stock": 
+            df_mostrar = df_mostrar[df_mostrar['stock_actual'] > 0]
+        elif filtro_stock == "Sin Stock": 
+            df_mostrar = df_mostrar[df_mostrar['stock_actual'] <= 0]
+        elif filtro_stock == "Bajo Mínimo": 
+            df_mostrar = df_mostrar[df_mostrar['stock_actual'] < df_mostrar['stock_minimo']]
+
+        st.dataframe(
+            df_mostrar, 
+            use_container_width=True, 
+            hide_index=True,
+            column_config={
+                "costo_u": st.column_config.NumberColumn("Costo U.", format="$ %.2f"),
+                "precio_v": st.column_config.NumberColumn("Precio L1", format="$ %.2f"),
+                "precio_v2": st.column_config.NumberColumn("Precio L2", format="$ %.2f"),
+                "stock_actual": st.column_config.NumberColumn("Stock Actual", format="%.2f")
+            }
+        )
+    else:
+        st.info("No hay productos cargados.")
+    
+    conn.close() # <--- Cerramos conexión y bloque de Inventario.
+
 # ---------------------------------------------------------
 # 2. RECETAS Y COSTEO (BLINDADO - SIN JOIN)
 # ---------------------------------------------------------
