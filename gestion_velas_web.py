@@ -52,7 +52,7 @@ inicializar_db()
 # ==========================================
 st.sidebar.title("🕯️ Velas Control")
 # Añadimos el número de versión para confirmar que el código se actualizó
-st.sidebar.info("Versión del Sistema: 8.6.6 (Sincronizada)")
+st.sidebar.info("Versión del Sistema: 8.6.7 (Sincronizada)")
 
 menu = st.sidebar.radio("Ir a:", [
     "📦 Inventario y Alta", 
@@ -68,12 +68,15 @@ st.sidebar.divider()
 if st.sidebar.button("Limpiar Caché de Sesión"):
     st.session_state.clear()
     st.rerun()
+
 # ---------------------------------------------------------
-# 1. INVENTARIO Y ALTA (RESTAURADO)
+# 1. INVENTARIO Y ALTA (V.9.2 - CON FILTROS AVANZADOS)
 # ---------------------------------------------------------
 if menu == "📦 Inventario y Alta":
-    st.subheader("Gestión de Stock")
+    st.subheader("Gestión de Stock e Inventario")
     conn = conectar()
+    
+    # --- SECCIÓN: ALTA DE PRODUCTO ---
     with st.expander("➕ DAR DE ALTA NUEVO PRODUCTO / INSUMO"):
         with st.form("alta_p"):
             c1, c2 = st.columns(2)
@@ -86,9 +89,77 @@ if menu == "📦 Inventario y Alta":
             if st.form_submit_button("Guardar"):
                 conn.execute("INSERT INTO productos (nombre, tipo, unidad, stock_actual, stock_minimo, costo_u) VALUES (?,?,?,?,?,?)",
                             (n_nom, n_tip, n_uni, n_stk, n_min, n_cst))
-                conn.commit(); st.success("Registrado"); st.rerun()
-    df = pd.read_sql_query("SELECT * FROM productos", conn)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+                conn.commit()
+                st.success("Registrado correctamente")
+                st.rerun()
+
+    st.divider()
+
+    # --- SECCIÓN: FILTROS DE VISTA ---
+    df_raw = pd.read_sql_query("SELECT * FROM productos", conn)
+    
+    if not df_raw.empty:
+        st.write("### 🔍 Filtros de Búsqueda")
+        col_f1, col_f2, col_f3 = st.columns([2, 1, 1])
+        
+        # 1. Búsqueda por Nombre
+        search = col_f1.text_input("Buscar por nombre:", placeholder="Escriba el nombre del producto...")
+        
+        # 2. Filtro por Tipo
+        tipos_disponibles = ["Todos"] + sorted(df_raw['tipo'].unique().tolist())
+        tipo_f = col_f2.selectbox("Tipo de producto:", tipos_disponibles)
+        
+        # 3. Filtro por Estado de Stock
+        stock_f = col_f3.selectbox("Estado de Stock:", ["Todo", "Con Stock", "Sin Stock", "Debajo del Mínimo"])
+
+        # --- APLICACIÓN DE FILTROS EN PANDAS ---
+        df_filtrado = df_raw.copy()
+
+        # Filtrar por Nombre
+        if search:
+            df_filtrado = df_filtrado[df_filtrado['nombre'].str.contains(search, case=False, na=False)]
+        
+        # Filtrar por Tipo
+        if tipo_f != "Todos":
+            df_filtrado = df_filtrado[df_filtrado['tipo'] == tipo_f]
+            
+        # Filtrar por Estado de Stock
+        if stock_f == "Con Stock":
+            df_filtrado = df_filtrado[df_filtrado['stock_actual'] > 0]
+        elif stock_f == "Sin Stock":
+            df_filtrado = df_filtrado[df_filtrado['stock_actual'] <= 0]
+        elif stock_f == "Debajo del Mínimo":
+            df_filtrado = df_filtrado[df_filtrado['stock_actual'] < df_filtrado['stock_minimo']]
+
+        # --- SELECCIÓN DE COLUMNAS A MOSTRAR ---
+        st.write("---")
+        cols_visibles = st.multiselect(
+            "Columnas a visualizar:",
+            df_filtrado.columns.tolist(),
+            default=["nombre", "tipo", "stock_actual", "stock_minimo", "costo_u", "precio_v"]
+        )
+
+        # Mostrar Tabla Final
+        if not df_filtrado.empty:
+            st.dataframe(
+                df_filtrado[cols_visibles], 
+                use_container_width=True, 
+                hide_index=True,
+                column_config={
+                    "stock_actual": st.column_config.NumberColumn("Stock", format="%.2f"),
+                    "costo_u": st.column_config.NumberColumn("Costo U.", format="$ %.2f"),
+                    "precio_v": st.column_config.NumberColumn("Precio L1", format="$ %.2f")
+                }
+            )
+            st.caption(f"Mostrando {len(df_filtrado)} productos.")
+        else:
+            st.info("No se encontraron productos con los filtros seleccionados.")
+    else:
+        st.info("El inventario está vacío. Use el formulario de alta para empezar.")
+    
+    conn.close()
+
+
 
 # ---------------------------------------------------------
 # 2. RECETAS Y COSTEO (BLINDADO - SIN JOIN)
