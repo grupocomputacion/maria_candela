@@ -275,24 +275,82 @@ elif menu == "🚀 Registrar Ventas":
 
 
 # ---------------------------------------------------------
-# 5. CAJA Y EXCEL (RESTAURADO: FILTROS POR FECHA Y TOTALES)
+# 5. CAJA Y EXCEL (V.8.8 - CON AJUSTES MANUALES)
 # ---------------------------------------------------------
 elif menu == "📊 Caja y Filtros":
-    st.subheader("Balance Mensual")
+    st.subheader("Balance y Control de Caja")
     conn = conectar()
-    c1, c2 = st.columns(2)
-    d1, d2 = c1.date_input("Desde", date(date.today().year, date.today().month, 1)), c2.date_input("Hasta", date.today())
-    df_v = pd.read_sql_query("SELECT fecha, 'VENTA' as Tipo, producto as Detalle, total_venta as Monto FROM historial_ventas", conn)
-    df_c = pd.read_sql_query("SELECT fecha, 'COMPRA' as Tipo, item_nombre as Detalle, -costo_total as Monto FROM historial_compras", conn)
-    df_caja = pd.concat([df_v, df_c])
+    
+    # --- PANEL DE AJUSTES (NUEVO) ---
+    with st.expander("⚙️ AJUSTES DE SALDO Y TRANSFERENCIAS"):
+        with st.form("form_ajuste_caja"):
+            c1, c2, c3 = st.columns(3)
+            tipo_ajuste = c1.selectbox("Tipo de Movimiento", ["Ajuste de Saldo", "Transferencia entre Cuentas"])
+            monto_ajuste = c2.number_input("Monto $", min_value=0.01)
+            pago_ajuste = c3.selectbox("Cuenta/Método", ["Efectivo", "Mercado Pago", "Transferencia", "Tarjeta"])
+            
+            detalle_ajuste = st.text_input("Detalle del ajuste (ej: 'Depósito en banco', 'Corrección saldo inicial')")
+            
+            if st.form_submit_button("💾 Aplicar Ajuste"):
+                # Si es Ajuste de Saldo, entra como una VENTA (si es positivo) o COMPRA (si es negativo) genérica
+                # Si es Transferencia, genera un egreso de una cuenta y un ingreso en otra
+                fecha_hoy = datetime.now().strftime("%Y-%m-%d %H:%M")
+                
+                if tipo_ajuste == "Ajuste de Saldo":
+                    conn.execute("""
+                        INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta, metodo_pago) 
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (fecha_hoy, "AJUSTE MANUAL", 0, monto_ajuste, pago_ajuste))
+                else:
+                    # Transferencia: Sale de Efectivo (por defecto) y entra al destino seleccionado
+                    conn.execute("""
+                        INSERT INTO historial_compras (fecha, item_nombre, cantidad, costo_total, metodo_pago) 
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (fecha_hoy, f"TRANSF: {detalle_ajuste}", 0, monto_ajuste, "Efectivo"))
+                    conn.execute("""
+                        INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta, metodo_pago) 
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (fecha_hoy, f"RECIBC: {detalle_ajuste}", 0, monto_ajuste, pago_ajuste))
+                
+                conn.commit()
+                st.success("Ajuste procesado correctamente.")
+                st.rerun()
+
+    # --- VISUALIZACIÓN DE SALDOS ---
+    c_f1, c_f2 = st.columns(2)
+    d1 = c_f1.date_input("Desde", date(date.today().year, date.today().month, 1), key="caja_desde")
+    d2 = c_f2.date_input("Hasta", date.today(), key="caja_hasta")
+    
+    df_v = pd.read_sql_query("SELECT fecha, 'VENTA' as Tipo, producto as Detalle, total_venta as Monto, metodo_pago as Pago FROM historial_ventas", conn)
+    df_c = pd.read_sql_query("SELECT fecha, 'COMPRA' as Tipo, item_nombre as Detalle, -costo_total as Monto, metodo_pago as Pago FROM historial_compras", conn)
+    
+    df_caja = pd.concat([df_v, df_c], ignore_index=True)
     df_caja['fecha_dt'] = pd.to_datetime(df_caja['fecha'], errors='coerce').dt.date
     df_f = df_caja[(df_caja['fecha_dt'] >= d1) & (df_caja['fecha_dt'] <= d2)].sort_values(by="fecha", ascending=False)
+
     if not df_f.empty:
-        st.metric("SALDO PERÍODO", f"$ {df_f['Monto'].sum():,.2f}")
-        st.dataframe(df_f[["fecha", "Tipo", "Detalle", "Monto"]], use_container_width=True)
+        # Cálculo de Saldos
+        efectivo = df_f[df_f['Pago'] == 'Efectivo']['Monto'].sum()
+        banco = df_f[df_f['Pago'].isin(['Transferencia', 'Mercado Pago', 'Virtual'])]['Monto'].sum()
+        tarjeta_deuda = df_f[(df_f['Pago'] == 'Tarjeta') & (df_f['Tipo'] == 'COMPRA')]['Monto'].sum()
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("SALDO TOTAL", f"$ {df_f['Monto'].sum():,.2f}")
+        m2.metric("EFECTIVO", f"$ {efectivo:,.2f}")
+        m3.metric("BANCO / TRANSF.", f"$ {banco:,.2f}")
+        m4.metric("DEUDA TARJETA", f"$ {tarjeta_deuda:,.2f}")
+
+        st.divider()
+        st.write("### Detalle de Movimientos")
+        st.dataframe(df_f[["fecha", "Tipo", "Detalle", "Monto", "Pago"]], use_container_width=True, hide_index=True)
+
         output = io.BytesIO()
         df_f.to_excel(output, index=False, engine='openpyxl')
-        st.download_button("📊 Exportar Excel", output.getvalue(), f"caja_{d1}.xlsx")
+        st.download_button("📥 Exportar Reporte Excel", output.getvalue(), f"caja_{d1}.xlsx")
+    else:
+        st.info("No hay movimientos en este período.")
+    conn.close()
+
 
 # ---------------------------------------------------------
 # 6. ANÁLISIS DE RENTABILIDAD POR PRODUCTO (NUEVA MEJORA)
