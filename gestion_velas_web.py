@@ -70,13 +70,13 @@ if st.sidebar.button("Limpiar Caché de Sesión"):
     st.rerun()
 
 # ---------------------------------------------------------
-# 1. INVENTARIO Y ALTA (V.9.3 - FILTROS + COLUMNAS FIJAS)
+# 1. INVENTARIO Y ALTA (V.9.4 - RESTAURACIÓN ESTÉTICA TOTAL)
 # ---------------------------------------------------------
 if menu == "📦 Inventario y Alta":
     st.subheader("Gestión de Stock")
     conn = conectar()
     
-    # --- ALTA DE PRODUCTO ---
+    # Mantenemos tu formulario de alta tal cual
     with st.expander("➕ DAR DE ALTA NUEVO PRODUCTO / INSUMO"):
         with st.form("alta_p"):
             c1, c2 = st.columns(2)
@@ -91,48 +91,46 @@ if menu == "📦 Inventario y Alta":
                             (n_nom, n_tip, n_uni, n_stk, n_min, n_cst))
                 conn.commit(); st.success("Registrado"); st.rerun()
 
-    # --- CONSULTA Y FILTROS ---
+    # --- FILTROS DISCRETOS ---
     df = pd.read_sql_query("SELECT * FROM productos", conn)
     
     if not df.empty:
-        # Fila de filtros rápida
-        c_f1, c_f2, c_f3 = st.columns([2, 1, 1])
+        # Colocamos los filtros en columnas pequeñas para que no "griten" en la pantalla
+        f1, f2, _ = st.columns([1, 1, 2]) # El tercer espacio vacío empuja los filtros a la izquierda
         
-        # Filtro 1: Tipo
-        lista_tipos = ["Todos"] + list(df['tipo'].unique())
-        f_tipo = c_f1.selectbox("Filtrar por Tipo:", lista_tipos)
+        lista_tipos = ["Todos"] + sorted(list(df['tipo'].unique()))
+        filtro_tipo = f1.selectbox("Filtrar Tipo:", lista_tipos, label_visibility="collapsed") # collapsed oculta el texto arriba del combo
         
-        # Filtro 2: Estado de Stock
-        f_stock = c_f2.selectbox("Estado Stock:", ["Todos", "Con Stock", "Sin Stock", "Bajo Mínimo"])
-        
-        # Filtro 3: Selección de columnas (Multiselect simple)
-        # Dejamos pre-seleccionadas las más importantes para no "romper" la vista inicial
-        cols_default = ["nombre", "tipo", "stock_actual", "stock_minimo", "costo_u", "precio_v"]
-        columnas_visibles = c_f3.multiselect("Columnas:", df.columns.tolist(), default=cols_default)
+        lista_stock = ["Todos los Stocks", "Con Stock", "Sin Stock", "Bajo Mínimo"]
+        filtro_stock = f2.selectbox("Estado Stock:", lista_stock, label_visibility="collapsed")
 
-        # Aplicar lógica de filtros
-        df_final = df.copy()
+        # Aplicamos la lógica de filtrado antes de mostrar la tabla
+        df_mostrar = df.copy()
         
-        if f_tipo != "Todos":
-            df_final = df_final[df_final['tipo'] == f_tipo]
+        if filtro_tipo != "Todos":
+            df_mostrar = df_mostrar[df_mostrar['tipo'] == filtro_tipo]
             
-        if f_stock == "Con Stock":
-            df_final = df_final[df_final['stock_actual'] > 0]
-        elif f_stock == "Sin Stock":
-            df_final = df_final[df_final['stock_actual'] <= 0]
-        elif f_stock == "Bajo Mínimo":
-            df_final = df_final[df_final['stock_actual'] < df_final['stock_minimo']]
+        if filtro_stock == "Con Stock":
+            df_mostrar = df_mostrar[df_mostrar['stock_actual'] > 0]
+        elif filtro_stock == "Sin Stock":
+            df_mostrar = df_mostrar[df_mostrar['stock_actual'] <= 0]
+        elif filtro_stock == "Bajo Mínimo":
+            df_mostrar = df_mostrar[df_mostrar['stock_actual'] < df_mostrar['stock_minimo']]
 
-        # Mostrar la tabla con las columnas elegidas
+        # --- TABLA ORIGINAL RECUPERADA ---
+        # No usamos multiselect externo. Usamos el dataframe completo.
+        # Streamlit permite al usuario ocultar columnas y buscar con la lupa nativa (esquina superior derecha de la tabla).
         st.dataframe(
-            df_final[columnas_visibles], 
+            df_mostrar, 
             use_container_width=True, 
             hide_index=True,
             column_config={
-                "stock_actual": st.column_config.NumberColumn("Stock Actual"),
-                "costo_u": st.column_config.NumberColumn("Costo $", format="$ %.2f"),
-                "precio_v": st.column_config.NumberColumn("Precio L1 $", format="$ %.2f"),
-                "precio_v2": st.column_config.NumberColumn("Precio L2 $", format="$ %.2f")
+                "costo_u": st.column_config.NumberColumn("Costo U.", format="$ %.2f"),
+                "precio_v": st.column_config.NumberColumn("Precio L1", format="$ %.2f"),
+                "precio_v2": st.column_config.NumberColumn("Precio L2", format="$ %.2f"),
+                "margen1": st.column_config.NumberColumn("Margen 1 %", format="%.1f%%"),
+                "margen2": st.column_config.NumberColumn("Margen 2 %", format="%.1f%%"),
+                "stock_actual": st.column_config.NumberColumn("Stock Actual", format="%.2f")
             }
         )
     else:
