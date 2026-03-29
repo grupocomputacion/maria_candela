@@ -52,14 +52,14 @@ inicializar_db()
 # ==========================================
 st.sidebar.title("🕯️ Velas Control")
 # Añadimos el número de versión para confirmar que el código se actualizó
-st.sidebar.info("Versión del Sistema: 8.6.3 (Sincronizada)")
+st.sidebar.info("Versión del Sistema: 8.6.4 (Sincronizada)")
 
 menu = st.sidebar.radio("Ir a:", [
     "📦 Inventario y Alta", 
     "🧪 Recetas y Costeo", 
     "🏭 Fabricación",
     "💰 Registro de Compras", 
-    "🚀 Registrar Venta", 
+    "🚀 Registrar Ventas", 
     "📊 Caja y Filtros",
     "📈 Rentabilidad x Producto"
 ])
