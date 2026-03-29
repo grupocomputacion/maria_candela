@@ -45,17 +45,22 @@ def inicializar_db():
 
 inicializar_db()
 
-# --- INTERFAZ ---
-st.sidebar.title("🕯️ Gestión Candela")
-menu = st.sidebar.radio("Ir a:", [
-    "📦 Inventario y Alta", 
-    "🧪 Recetas y Costeo", 
-    "🏭 Fabricación",
-    "💰 Registro de Compras", 
-    "🚀 Registrar Venta", 
-    "📊 Caja y Filtros",
-    "📈 Rentabilidad x Producto"
-])
+# ==========================================
+# MENÚ LATERAL - VERSIÓN 8.6 (REVISIÓN)
+# ==========================================
+st.sidebar.title("🕯️ Velas Control")
+# Añadimos el número de versión para confirmar que el código se actualizó
+st.sidebar.info("Versión del Sistema: 8.6.2 (Sincronizada)")
+
+menu = st.sidebar.radio(
+    "Seleccione una opción:",
+    ["📊 Tablero Principal", "🛍️ Registrar Ventas", "📦 Inventario", "💰 Caja y Gastos"]
+)
+
+st.sidebar.divider()
+if st.sidebar.button("Limpiar Caché de Sesión"):
+    st.session_state.clear()
+    st.rerun()
 
 # ---------------------------------------------------------
 # 1. INVENTARIO Y ALTA (RESTAURADO)
