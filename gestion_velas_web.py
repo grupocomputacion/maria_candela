@@ -130,67 +130,6 @@ with st.sidebar.expander("⚠️ Restaurar Sistema"):
         else:
             st.error("Por favor, sube un archivo primero.")    
 
-# ==========================================
-# 🛡️ SEGURIDAD: BACKUP Y RESTAURACIÓN
-# ==========================================
-st.sidebar.divider()
-st.sidebar.subheader("Mantenimiento")
-
-# --- FUNCIÓN 1: GENERAR BACKUP ---
-def generar_backup():
-    conn = conectar()
-    # Leemos todas las tablas importantes
-    tablas = ["productos", "recetas", "historial_ventas", "historial_compras"]
-    backup_data = {}
-    for t in tablas:
-        try:
-            backup_data[t] = pd.read_sql_query(f"SELECT * FROM {t}", conn)
-        except:
-            pass
-    conn.close()
-    
-    # Creamos un archivo Excel con múltiples pestañas (una por tabla)
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        for nombre_tabla, df_tabla in backup_data.items():
-            df_tabla.to_excel(writer, sheet_name=nombre_tabla, index=False)
-    return output.getvalue()
-
-# Botón de Descarga
-st.sidebar.download_button(
-    label="📥 Descargar Backup Total",
-    data=generar_backup(),
-    file_name=f"backup_velas_{date.today()}.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    help="Descarga un archivo Excel con todos los datos del sistema."
-)
-
-# --- FUNCIÓN 2: RESTAURAR DESDE BACKUP ---
-with st.sidebar.expander("⚠️ Restaurar Sistema"):
-    st.warning("Al restaurar, se borrarán los datos actuales y se reemplazarán por los del archivo.")
-    archivo_backup = st.file_uploader("Subir archivo de backup (.xlsx)", type=["xlsx"])
-    
-    if archivo_button := st.button("🚀 Iniciar Restauración"):
-        if archivo_backup is not None:
-            try:
-                # Leemos el Excel
-                excel_data = pd.read_excel(archivo_backup, sheet_name=None)
-                conn = conectar()
-                
-                for tabla, df_nueva in excel_data.items():
-                    # Borramos la tabla actual e insertamos la del backup
-                    conn.execute(f"DELETE FROM {tabla}")
-                    df_nueva.to_sql(tabla, conn, if_exists='append', index=False)
-                
-                conn.commit()
-                conn.close()
-                st.success("✅ Sistema restaurado con éxito.")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error en la restauración: {e}")
-        else:
-            st.error("Por favor, sube un archivo primero.")
-
 
 # ---------------------------------------------------------
 # 1. INVENTARIO Y ALTA (V.9.6 - CIERRE DE BLOQUE CORREGIDO)
