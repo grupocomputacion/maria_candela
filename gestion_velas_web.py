@@ -178,75 +178,76 @@ elif menu == "💰 Registro de Compras":
 
 
 # ==========================================
-# 🛍️ REGISTRAR VENTAS (V.2.0 - FIXED VISIBILITY)
+# 🛍️ REGISTRAR VENTAS (V.2.1 - DIAGNÓSTICO)
 # ==========================================
 elif menu == "🛍️ Registrar Ventas":
     st.header("Registro de Ventas de Velas")
     
-    # 1. Traemos los productos
-    productos = db_query("SELECT id, nombre, precio_sugerido, stock FROM productos WHERE stock > 0")
-    
-    if productos is not None and not productos.empty:
-        # Usamos una estructura más simple para asegurar la visibilidad
-        with st.form("f_registro_venta_simple"):
+    # 1. Intentamos traer los productos
+    try:
+        productos = db_query("SELECT id, nombre, precio_sugerido, stock FROM productos WHERE stock > 0")
+    except Exception as e:
+        st.error(f"Error al conectar con la base de datos: {e}")
+        productos = None
+
+    # DIAGNÓSTICO: Si no ves el formulario, esto te dirá por qué
+    if productos is None:
+        st.error("No se pudo obtener la tabla de productos (La consulta devolvió None).")
+    elif productos.empty:
+        st.warning("No hay productos cargados en la base de datos o todos tienen Stock 0.")
+    else:
+        # SI LLEGA AQUÍ, EL FORMULARIO SE TIENE QUE VER SÍ O SÍ
+        with st.form("f_registro_venta_final"):
             st.subheader("Datos de la Venta")
             
             # Selección de producto
-            opciones_prod = productos.index.tolist()
             prod_sel = st.selectbox(
                 "Seleccione el producto:",
-                opciones_prod,
+                productos.index.tolist(),
                 format_func=lambda x: f"{productos.loc[x, 'nombre']} (Stock: {productos.loc[x, 'stock']})"
             )
             
             col_a, col_b = st.columns(2)
             
-            cant = col_a.number_input("Cantidad:", min_value=1, max_value=int(productos.loc[prod_sel, 'stock']), value=1)
+            # Cantidad
+            cant = col_a.number_input("Cantidad:", min_value=1, value=1)
             
-            # Cálculo del precio sugerido
+            # Precio
             p_unitario = float(productos.loc[prod_sel, 'precio_sugerido'])
             total_sugerido = p_unitario * cant
             
-            # EL CAMPO DE MONTO REAL: Sin 'key' para evitar el error de visibilidad, 
-            # pero usando el valor calculado directamente.
-            monto_venta_final = col_b.number_input(
-                "Monto TOTAL a cobrar ($):", 
+            # El campo que PODÉS EDITAR para hacer atenciones o extras
+            monto_final_venta = col_b.number_input(
+                "Monto REAL a cobrar ($):", 
                 min_value=0.0, 
                 value=total_sugerido,
-                help="Edite este monto si desea aplicar descuentos o recargos."
+                format="%.2f"
             )
             
-            st.write(f"💡 Precio sugerido por unidad: ${p_unitario} (Total: ${total_sugerido})")
+            st.write(f"💡 Precio de lista: ${p_unitario} c/u | Sugerido: ${total_sugerido}")
             
             c1, c2 = st.columns(2)
-            cliente = c1.text_input("Cliente (Opcional):")
+            cliente = c1.text_input("Cliente:")
             metodo = c2.selectbox("Pago:", ["Efectivo", "Transferencia", "Tarjeta"])
             
             btn_registrar = st.form_submit_button("✅ CONFIRMAR VENTA")
 
-        # --- LÓGICA DE GRABADO ---
-        if btn_registrar:
-            # Aquí 'monto_venta_final' YA tiene el valor que el usuario escribió
-            id_p = int(productos.loc[prod_sel, 'id'])
-            
-            try:
-                # 1. Insertar Venta (usando el monto_venta_final que capturamos del input)
-                db_query("""
-                    INSERT INTO ventas (id_producto, cantidad, precio_total, cliente, metodo_pago, fecha)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (id_p, cant, monto_venta_final, cliente, metodo, date.today()), commit=True)
+            if btn_registrar:
+                id_p = int(productos.loc[prod_sel, 'id'])
+                try:
+                    # Grabamos la venta con el monto_final_venta (el que editaste)
+                    db_query("""
+                        INSERT INTO ventas (id_producto, cantidad, precio_total, cliente, metodo_pago, fecha)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (id_p, cant, monto_final_venta, cliente, metodo, date.today()), commit=True)
 
-                # 2. Descontar Stock
-                db_query("UPDATE productos SET stock = stock - ? WHERE id = ?", (cant, id_p), commit=True)
+                    # Descontamos stock
+                    db_query("UPDATE productos SET stock = stock - ? WHERE id = ?", (cant, id_p), commit=True)
 
-                st.success(f"Venta registrada por ${monto_venta_final}. Stock actualizado.")
-                st.rerun()
-
-            except Exception as e:
-                st.error(f"Error al grabar venta: {e}")
-    else:
-        st.warning("No hay productos con stock para vender.")
-
+                    st.success(f"Venta registrada por ${monto_final_venta}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error al grabar: {e}")
 
 # ---------------------------------------------------------
 # 5. CAJA Y EXCEL (RESTAURADO: FILTROS POR FECHA Y TOTALES)
