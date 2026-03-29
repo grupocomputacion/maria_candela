@@ -52,7 +52,7 @@ inicializar_db()
 # ==========================================
 st.sidebar.title("🕯️ Velas Control")
 # Añadimos el número de versión para confirmar que el código se actualizó
-st.sidebar.info("Versión del Sistema: 8.6.5 (Sincronizada)")
+st.sidebar.info("Versión del Sistema: 8.6.6 (Sincronizada)")
 
 menu = st.sidebar.radio("Ir a:", [
     "📦 Inventario y Alta", 
@@ -275,7 +275,7 @@ elif menu == "🚀 Registrar Ventas":
 
 
 # ---------------------------------------------------------
-# 5. CAJA Y EXCEL (V.9.0 - FECHAS LIMPIAS Y REFRESCO TOTAL)
+# 5. CAJA Y EXCEL (V.9.1 - ERROR DE FECHA BLINDADO)
 # ---------------------------------------------------------
 elif menu == "📊 Caja y Filtros":
     st.subheader("Balance y Control de Caja")
@@ -283,85 +283,68 @@ elif menu == "📊 Caja y Filtros":
     
     # --- PANEL DE AJUSTES ---
     with st.expander("⚙️ AJUSTES DE SALDO Y TRANSFERENCIAS"):
-        with st.form("form_ajuste_caja_v90", clear_on_submit=True):
+        with st.form("form_ajuste_caja_v91", clear_on_submit=True):
             c1, c2, c3 = st.columns(3)
             tipo_aj = c1.selectbox("Tipo de Movimiento", ["Ajuste de Saldo", "Transferencia"])
-            
-            # Si la caja está en -35.900, debés poner 35900 (positivo) para llevar a cero
-            monto_aj = c2.number_input("Monto $ (positivo suma / negativo resta)", value=0.0, format="%.2f")
+            monto_aj = c2.number_input("Monto $", value=0.0, format="%.2f")
             pago_aj = c3.selectbox("Cuenta/Método", ["Efectivo", "Mercado Pago", "Transferencia", "Tarjeta"])
-            
-            det_aj = st.text_input("Detalle del ajuste", placeholder="Ej: Ajuste para dejar en cero")
+            det_aj = st.text_input("Detalle")
             
             if st.form_submit_button("💾 APLICAR AJUSTE"):
-                # IMPORTANTE: Usamos solo la fecha YYYY-MM-DD para que el filtro lo vea sí o sí
                 fecha_ajuste = date.today().strftime("%Y-%m-%d")
-                
                 try:
                     if tipo_aj == "Ajuste de Saldo":
                         if monto_aj >= 0:
-                            conn.execute("""
-                                INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta, metodo_pago) 
-                                VALUES (?, ?, ?, ?, ?)
-                            """, (fecha_ajuste, f"AJUSTE: {det_aj}", 0, monto_aj, pago_aj))
+                            conn.execute("INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta, metodo_pago) VALUES (?,?,?,?,?)", (fecha_ajuste, f"AJUSTE: {det_aj}", 0, monto_aj, pago_aj))
                         else:
-                            conn.execute("""
-                                INSERT INTO historial_compras (fecha, item_nombre, cantidad, costo_total, metodo_pago) 
-                                VALUES (?, ?, ?, ?, ?)
-                            """, (fecha_ajuste, f"AJUSTE: {det_aj}", 0, abs(monto_aj), pago_aj))
-                    
+                            conn.execute("INSERT INTO historial_compras (fecha, item_nombre, cantidad, costo_total, metodo_pago) VALUES (?,?,?,?,?)", (fecha_ajuste, f"AJUSTE: {det_aj}", 0, abs(monto_aj), pago_aj))
                     else:
-                        # Transferencia (Sale de Efectivo, entra al destino)
-                        conn.execute("""
-                            INSERT INTO historial_compras (fecha, item_nombre, cantidad, costo_total, metodo_pago) 
-                            VALUES (?, ?, ?, ?, ?)
-                        """, (fecha_ajuste, f"EGRESO TRANSF: {det_aj}", 0, monto_aj, "Efectivo"))
-                        conn.execute("""
-                            INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta, metodo_pago) 
-                            VALUES (?, ?, ?, ?, ?)
-                        """, (fecha_ajuste, f"INGRESO TRANSF: {det_aj}", 0, monto_aj, pago_aj))
-                    
+                        conn.execute("INSERT INTO historial_compras (fecha, item_nombre, cantidad, costo_total, metodo_pago) VALUES (?,?,?,?,?)", (fecha_ajuste, f"EGRESO TRANSF", 0, monto_aj, "Efectivo"))
+                        conn.execute("INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta, metodo_pago) VALUES (?,?,?,?,?)", (fecha_ajuste, f"INGRESO TRANSF", 0, monto_aj, pago_aj))
                     conn.commit()
-                    st.success(f"✅ Ajuste de ${monto_aj} aplicado. Refrescando saldos...")
-                    st.rerun() # Esto fuerza a recargar los DataFrames con el nuevo dato
-                except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.success("Ajuste aplicado.")
+                    st.rerun()
+                except Exception as e: st.error(f"Error: {e}")
 
-    # --- VISUALIZACIÓN ---
+    # --- VISUALIZACIÓN (AQUÍ ESTABA EL ERROR) ---
     c_f1, c_f2 = st.columns(2)
     d_desde = c_f1.date_input("Desde", date(date.today().year, date.today().month, 1))
     d_hasta = c_f2.date_input("Hasta", date.today())
     
-    # Re-leemos las tablas para asegurar que el ajuste recién hecho aparezca
     df_v = pd.read_sql_query("SELECT fecha, 'VENTA' as Tipo, producto as Detalle, total_venta as Monto, metodo_pago as Pago FROM historial_ventas", conn)
     df_c = pd.read_sql_query("SELECT fecha, 'COMPRA' as Tipo, item_nombre as Detalle, -costo_total as Monto, metodo_pago as Pago FROM historial_compras", conn)
     
-    df_caja = pd.concat([df_v, df_c], ignore_index=True)
-    
-    # Normalizamos la fecha para que la comparación no falle por las horas
-    df_caja['fecha_dt'] = pd.to_datetime(df_caja['fecha']).dt.date
-    
-    # Filtro estricto por fecha
-    df_f = df_caja[(df_caja['fecha_dt'] >= d_desde) & (df_caja['fecha_dt'] <= d_hasta)].sort_values(by="fecha", ascending=False)
+    if not df_v.empty or not df_c.empty:
+        df_caja = pd.concat([df_v, df_c], ignore_index=True)
+        
+        # --- CORRECCIÓN CRÍTICA ---
+        # errors='coerce' transforma las fechas malas en "NaT" (Not a Time) en lugar de dar error
+        df_caja['fecha_dt'] = pd.to_datetime(df_caja['fecha'], errors='coerce').dt.date
+        
+        # Eliminamos filas donde la fecha sea inválida para que no rompa el filtro
+        df_caja = df_caja.dropna(subset=['fecha_dt'])
+        
+        # Filtro
+        df_f = df_caja[(df_caja['fecha_dt'] >= d_desde) & (df_caja['fecha_dt'] <= d_hasta)].sort_values(by="fecha", ascending=False)
 
-    if not df_f.empty:
-        # Cálculos precisos
-        efectivo = df_f[df_f['Pago'] == 'Efectivo']['Monto'].sum()
-        banco = df_f[df_f['Pago'].isin(['Transferencia', 'Mercado Pago'])]['Monto'].sum()
-        tarjeta = df_f[(df_f['Pago'] == 'Tarjeta') & (df_f['Tipo'] == 'COMPRA')]['Monto'].sum()
+        if not df_f.empty:
+            efectivo = df_f[df_f['Pago'] == 'Efectivo']['Monto'].sum()
+            banco = df_f[df_f['Pago'].isin(['Transferencia', 'Mercado Pago', 'Virtual'])]['Monto'].sum()
+            tarjeta = df_f[(df_f['Pago'] == 'Tarjeta') & (df_f['Tipo'] == 'COMPRA')]['Monto'].sum()
 
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("SALDO TOTAL", f"$ {df_f['Monto'].sum():,.2f}")
-        m2.metric("EFECTIVO", f"$ {efectivo:,.2f}")
-        m3.metric("BANCO / MP", f"$ {banco:,.2f}")
-        m4.metric("DEUDA TARJETA", f"$ {tarjeta:,.2f}")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("SALDO TOTAL", f"$ {df_f['Monto'].sum():,.2f}")
+            m2.metric("EFECTIVO", f"$ {efectivo:,.2f}")
+            m3.metric("BANCO / MP", f"$ {banco:,.2f}")
+            m4.metric("DEUDA TARJETA", f"$ {tarjeta:,.2f}")
 
-        st.divider()
-        st.dataframe(df_f[["fecha", "Tipo", "Detalle", "Monto", "Pago"]], use_container_width=True, hide_index=True)
+            st.divider()
+            st.dataframe(df_f[["fecha", "Tipo", "Detalle", "Monto", "Pago"]], use_container_width=True, hide_index=True)
+        else:
+            st.info("No hay movimientos válidos en este período.")
     else:
-        st.info("No hay movimientos en este período.")
+        st.info("No hay datos en el historial.")
     conn.close()
-
 
 # ---------------------------------------------------------
 # 6. ANÁLISIS DE RENTABILIDAD POR PRODUCTO (NUEVA MEJORA)
