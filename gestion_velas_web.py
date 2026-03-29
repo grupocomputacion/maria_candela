@@ -70,13 +70,13 @@ if st.sidebar.button("Limpiar Caché de Sesión"):
     st.rerun()
 
 # ---------------------------------------------------------
-# 1. INVENTARIO Y ALTA (V.9.2 - CON FILTROS AVANZADOS)
+# 1. INVENTARIO Y ALTA (V.9.3 - FILTROS + COLUMNAS FIJAS)
 # ---------------------------------------------------------
 if menu == "📦 Inventario y Alta":
-    st.subheader("Gestión de Stock e Inventario")
+    st.subheader("Gestión de Stock")
     conn = conectar()
     
-    # --- SECCIÓN: ALTA DE PRODUCTO ---
+    # --- ALTA DE PRODUCTO ---
     with st.expander("➕ DAR DE ALTA NUEVO PRODUCTO / INSUMO"):
         with st.form("alta_p"):
             c1, c2 = st.columns(2)
@@ -89,76 +89,56 @@ if menu == "📦 Inventario y Alta":
             if st.form_submit_button("Guardar"):
                 conn.execute("INSERT INTO productos (nombre, tipo, unidad, stock_actual, stock_minimo, costo_u) VALUES (?,?,?,?,?,?)",
                             (n_nom, n_tip, n_uni, n_stk, n_min, n_cst))
-                conn.commit()
-                st.success("Registrado correctamente")
-                st.rerun()
+                conn.commit(); st.success("Registrado"); st.rerun()
 
-    st.divider()
-
-    # --- SECCIÓN: FILTROS DE VISTA ---
-    df_raw = pd.read_sql_query("SELECT * FROM productos", conn)
+    # --- CONSULTA Y FILTROS ---
+    df = pd.read_sql_query("SELECT * FROM productos", conn)
     
-    if not df_raw.empty:
-        st.write("### 🔍 Filtros de Búsqueda")
-        col_f1, col_f2, col_f3 = st.columns([2, 1, 1])
+    if not df.empty:
+        # Fila de filtros rápida
+        c_f1, c_f2, c_f3 = st.columns([2, 1, 1])
         
-        # 1. Búsqueda por Nombre
-        search = col_f1.text_input("Buscar por nombre:", placeholder="Escriba el nombre del producto...")
+        # Filtro 1: Tipo
+        lista_tipos = ["Todos"] + list(df['tipo'].unique())
+        f_tipo = c_f1.selectbox("Filtrar por Tipo:", lista_tipos)
         
-        # 2. Filtro por Tipo
-        tipos_disponibles = ["Todos"] + sorted(df_raw['tipo'].unique().tolist())
-        tipo_f = col_f2.selectbox("Tipo de producto:", tipos_disponibles)
+        # Filtro 2: Estado de Stock
+        f_stock = c_f2.selectbox("Estado Stock:", ["Todos", "Con Stock", "Sin Stock", "Bajo Mínimo"])
         
-        # 3. Filtro por Estado de Stock
-        stock_f = col_f3.selectbox("Estado de Stock:", ["Todo", "Con Stock", "Sin Stock", "Debajo del Mínimo"])
+        # Filtro 3: Selección de columnas (Multiselect simple)
+        # Dejamos pre-seleccionadas las más importantes para no "romper" la vista inicial
+        cols_default = ["nombre", "tipo", "stock_actual", "stock_minimo", "costo_u", "precio_v"]
+        columnas_visibles = c_f3.multiselect("Columnas:", df.columns.tolist(), default=cols_default)
 
-        # --- APLICACIÓN DE FILTROS EN PANDAS ---
-        df_filtrado = df_raw.copy()
-
-        # Filtrar por Nombre
-        if search:
-            df_filtrado = df_filtrado[df_filtrado['nombre'].str.contains(search, case=False, na=False)]
+        # Aplicar lógica de filtros
+        df_final = df.copy()
         
-        # Filtrar por Tipo
-        if tipo_f != "Todos":
-            df_filtrado = df_filtrado[df_filtrado['tipo'] == tipo_f]
+        if f_tipo != "Todos":
+            df_final = df_final[df_final['tipo'] == f_tipo]
             
-        # Filtrar por Estado de Stock
-        if stock_f == "Con Stock":
-            df_filtrado = df_filtrado[df_filtrado['stock_actual'] > 0]
-        elif stock_f == "Sin Stock":
-            df_filtrado = df_filtrado[df_filtrado['stock_actual'] <= 0]
-        elif stock_f == "Debajo del Mínimo":
-            df_filtrado = df_filtrado[df_filtrado['stock_actual'] < df_filtrado['stock_minimo']]
+        if f_stock == "Con Stock":
+            df_final = df_final[df_final['stock_actual'] > 0]
+        elif f_stock == "Sin Stock":
+            df_final = df_final[df_final['stock_actual'] <= 0]
+        elif f_stock == "Bajo Mínimo":
+            df_final = df_final[df_final['stock_actual'] < df_final['stock_minimo']]
 
-        # --- SELECCIÓN DE COLUMNAS A MOSTRAR ---
-        st.write("---")
-        cols_visibles = st.multiselect(
-            "Columnas a visualizar:",
-            df_filtrado.columns.tolist(),
-            default=["nombre", "tipo", "stock_actual", "stock_minimo", "costo_u", "precio_v"]
+        # Mostrar la tabla con las columnas elegidas
+        st.dataframe(
+            df_final[columnas_visibles], 
+            use_container_width=True, 
+            hide_index=True,
+            column_config={
+                "stock_actual": st.column_config.NumberColumn("Stock Actual"),
+                "costo_u": st.column_config.NumberColumn("Costo $", format="$ %.2f"),
+                "precio_v": st.column_config.NumberColumn("Precio L1 $", format="$ %.2f"),
+                "precio_v2": st.column_config.NumberColumn("Precio L2 $", format="$ %.2f")
+            }
         )
-
-        # Mostrar Tabla Final
-        if not df_filtrado.empty:
-            st.dataframe(
-                df_filtrado[cols_visibles], 
-                use_container_width=True, 
-                hide_index=True,
-                column_config={
-                    "stock_actual": st.column_config.NumberColumn("Stock", format="%.2f"),
-                    "costo_u": st.column_config.NumberColumn("Costo U.", format="$ %.2f"),
-                    "precio_v": st.column_config.NumberColumn("Precio L1", format="$ %.2f")
-                }
-            )
-            st.caption(f"Mostrando {len(df_filtrado)} productos.")
-        else:
-            st.info("No se encontraron productos con los filtros seleccionados.")
     else:
-        st.info("El inventario está vacío. Use el formulario de alta para empezar.")
+        st.info("No hay productos cargados.")
     
     conn.close()
-
 
 
 # ---------------------------------------------------------
