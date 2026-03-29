@@ -275,52 +275,72 @@ elif menu == "🚀 Registrar Ventas":
 
 
 # ---------------------------------------------------------
-# 5. CAJA Y EXCEL (V.8.8 - CON AJUSTES MANUALES)
+# 5. CAJA Y EXCEL (V.8.9 - AJUSTES CON NEGATIVOS Y RESET)
 # ---------------------------------------------------------
 elif menu == "📊 Caja y Filtros":
     st.subheader("Balance y Control de Caja")
     conn = conectar()
     
-    # --- PANEL DE AJUSTES (NUEVO) ---
+    # --- PANEL DE AJUSTES MEJORADO ---
     with st.expander("⚙️ AJUSTES DE SALDO Y TRANSFERENCIAS"):
-        with st.form("form_ajuste_caja"):
-            c1, c2, c3 = st.columns(3)
-            tipo_ajuste = c1.selectbox("Tipo de Movimiento", ["Ajuste de Saldo", "Transferencia entre Cuentas"])
-            monto_ajuste = c2.number_input("Monto $", min_value=0.01)
-            pago_ajuste = c3.selectbox("Cuenta/Método", ["Efectivo", "Mercado Pago", "Transferencia", "Tarjeta"])
-            
-            detalle_ajuste = st.text_input("Detalle del ajuste (ej: 'Depósito en banco', 'Corrección saldo inicial')")
-            
-            if st.form_submit_button("💾 Aplicar Ajuste"):
-                # Si es Ajuste de Saldo, entra como una VENTA (si es positivo) o COMPRA (si es negativo) genérica
-                # Si es Transferencia, genera un egreso de una cuenta y un ingreso en otra
-                fecha_hoy = datetime.now().strftime("%Y-%m-%d %H:%M")
-                
-                if tipo_ajuste == "Ajuste de Saldo":
-                    conn.execute("""
-                        INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta, metodo_pago) 
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (fecha_hoy, "AJUSTE MANUAL", 0, monto_ajuste, pago_ajuste))
-                else:
-                    # Transferencia: Sale de Efectivo (por defecto) y entra al destino seleccionado
-                    conn.execute("""
-                        INSERT INTO historial_compras (fecha, item_nombre, cantidad, costo_total, metodo_pago) 
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (fecha_hoy, f"TRANSF: {detalle_ajuste}", 0, monto_ajuste, "Efectivo"))
-                    conn.execute("""
-                        INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta, metodo_pago) 
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (fecha_hoy, f"RECIBC: {detalle_ajuste}", 0, monto_ajuste, pago_ajuste))
-                
-                conn.commit()
-                st.success("Ajuste procesado correctamente.")
-                st.rerun()
+        # Inicializamos llaves en el session_state si no existen para poder limpiarlas
+        if "adj_monto" not in st.session_state: st.session_state.adj_monto = 0.0
+        if "adj_det" not in st.session_state: st.session_state.adj_det = ""
 
-    # --- VISUALIZACIÓN DE SALDOS ---
+        with st.form("form_ajuste_caja_v89", clear_on_submit=True):
+            c1, c2, c3 = st.columns(3)
+            tipo_aj = c1.selectbox("Tipo de Movimiento", ["Ajuste de Saldo", "Transferencia (Efectivo -> Destino)"])
+            
+            # Permitimos valores negativos (min_value=None)
+            monto_aj = c2.number_input("Monto $ (use - para restar)", value=0.0, format="%.2f")
+            pago_aj = c3.selectbox("Cuenta/Método", ["Efectivo", "Mercado Pago", "Transferencia", "Tarjeta"])
+            
+            det_aj = st.text_input("Detalle del ajuste", placeholder="Ej: Error de conteo, Gasto no anotado...")
+            
+            if st.form_submit_button("💾 APLICAR AJUSTE"):
+                fecha_f = datetime.now().strftime("%Y-%m-%d %H:%M")
+                
+                try:
+                    if tipo_aj == "Ajuste de Saldo":
+                        # Si el monto es positivo va a Ventas, si es negativo a Compras (para que reste)
+                        if monto_aj >= 0:
+                            conn.execute("""
+                                INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta, metodo_pago) 
+                                VALUES (?, ?, ?, ?, ?)
+                            """, (fecha_f, f"AJUSTE: {det_aj}", 0, monto_aj, pago_aj))
+                        else:
+                            # Convertimos el negativo a positivo para el 'costo_total' porque la resta la hace el SQL en el Balance
+                            conn.execute("""
+                                INSERT INTO historial_compras (fecha, item_nombre, cantidad, costo_total, metodo_pago) 
+                                VALUES (?, ?, ?, ?, ?)
+                            """, (fecha_f, f"AJUSTE: {det_aj}", 0, abs(monto_aj), pago_aj))
+                    
+                    else:
+                        # Transferencia (Sale de Efectivo, entra a la cuenta seleccionada)
+                        # Salida de Efectivo
+                        conn.execute("""
+                            INSERT INTO historial_compras (fecha, item_nombre, cantidad, costo_total, metodo_pago) 
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (fecha_f, f"EGRESO TRANSF: {det_aj}", 0, monto_aj, "Efectivo"))
+                        # Entrada al Destino
+                        conn.execute("""
+                            INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta, metodo_pago) 
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (fecha_f, f"INGRESO TRANSF: {det_aj}", 0, monto_aj, pago_aj))
+                    
+                    conn.commit()
+                    st.success("✅ Ajuste aplicado con éxito.")
+                    # El rerun limpia el formulario por el 'clear_on_submit=True'
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error al procesar ajuste: {e}")
+
+    # --- RESTO DE LA LÓGICA DE VISUALIZACIÓN (Saldos y Tabla) ---
     c_f1, c_f2 = st.columns(2)
     d1 = c_f1.date_input("Desde", date(date.today().year, date.today().month, 1), key="caja_desde")
     d2 = c_f2.date_input("Hasta", date.today(), key="caja_hasta")
     
+    # Consultas SQL unificadas
     df_v = pd.read_sql_query("SELECT fecha, 'VENTA' as Tipo, producto as Detalle, total_venta as Monto, metodo_pago as Pago FROM historial_ventas", conn)
     df_c = pd.read_sql_query("SELECT fecha, 'COMPRA' as Tipo, item_nombre as Detalle, -costo_total as Monto, metodo_pago as Pago FROM historial_compras", conn)
     
@@ -329,7 +349,7 @@ elif menu == "📊 Caja y Filtros":
     df_f = df_caja[(df_caja['fecha_dt'] >= d1) & (df_caja['fecha_dt'] <= d2)].sort_values(by="fecha", ascending=False)
 
     if not df_f.empty:
-        # Cálculo de Saldos
+        # Métricas de Saldo
         efectivo = df_f[df_f['Pago'] == 'Efectivo']['Monto'].sum()
         banco = df_f[df_f['Pago'].isin(['Transferencia', 'Mercado Pago', 'Virtual'])]['Monto'].sum()
         tarjeta_deuda = df_f[(df_f['Pago'] == 'Tarjeta') & (df_f['Tipo'] == 'COMPRA')]['Monto'].sum()
@@ -341,12 +361,7 @@ elif menu == "📊 Caja y Filtros":
         m4.metric("DEUDA TARJETA", f"$ {tarjeta_deuda:,.2f}")
 
         st.divider()
-        st.write("### Detalle de Movimientos")
         st.dataframe(df_f[["fecha", "Tipo", "Detalle", "Monto", "Pago"]], use_container_width=True, hide_index=True)
-
-        output = io.BytesIO()
-        df_f.to_excel(output, index=False, engine='openpyxl')
-        st.download_button("📥 Exportar Reporte Excel", output.getvalue(), f"caja_{d1}.xlsx")
     else:
         st.info("No hay movimientos en este período.")
     conn.close()
