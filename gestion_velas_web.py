@@ -52,7 +52,7 @@ inicializar_db()
 # ==========================================
 st.sidebar.title("🕯️ Velas Control")
 # Añadimos el número de versión para confirmar que el código se actualizó
-st.sidebar.info("Versión del Sistema: 8.6.4 (Sincronizada)")
+st.sidebar.info("Versión del Sistema: 8.6.5 (Sincronizada)")
 
 menu = st.sidebar.radio("Ir a:", [
     "📦 Inventario y Alta", 
@@ -189,25 +189,26 @@ elif menu == "💰 Registro de Compras":
 
 
 # ==========================================
-# 🛍️ REGISTRAR VENTAS (V.8.5 - REPARACIÓN TOTAL)
+# 🚀 REGISTRAR VENTAS (V.8.6.5 - COMPATIBILIDAD TOTAL)
 # ==========================================
-elif menu == "🛍️ Registrar Ventas":
+elif menu == "🚀 Registrar Ventas":
     st.header("Registro de Ventas")
     
-    # 1. Traemos los productos (quitamos filtros complejos para asegurar visibilidad)
-    # Agregamos un try/except interno para capturar errores de base de datos
+    conn = conectar()
+    # 1. Traemos los productos finales (que son los que se venden)
     try:
-        df_prod = db_query("SELECT id, nombre, precio_sugerido, stock FROM productos")
+        # En tu tabla la columna se llama 'stock_actual' y el precio 'precio_v'
+        df_prod = pd.read_sql_query("SELECT id, nombre, precio_v, stock_actual FROM productos WHERE UPPER(tipo) = 'FINAL'", conn)
     except Exception as e:
         st.error(f"Error técnico al leer productos: {e}")
         df_prod = None
 
     if df_prod is not None and not df_prod.empty:
-        # Filtramos en memoria los que tienen stock para el selector
-        productos_con_stock = df_prod[df_prod['stock'] > 0]
+        # Filtramos los que tienen stock
+        productos_con_stock = df_prod[df_prod['stock_actual'] > 0]
         
         if productos_con_stock.empty:
-            st.warning("⚠️ Todos los productos figuran con Stock 0 en la base de datos.")
+            st.warning("⚠️ No hay productos con stock disponible para vender.")
         else:
             with st.form("f_venta_corregida", clear_on_submit=False):
                 st.subheader("Nueva Venta")
@@ -216,66 +217,62 @@ elif menu == "🛍️ Registrar Ventas":
                 idx_prod = st.selectbox(
                     "Producto:",
                     productos_con_stock.index.tolist(),
-                    format_func=lambda x: f"{productos_con_stock.loc[x, 'nombre']} (Stock: {productos_con_stock.loc[x, 'stock']})"
+                    format_func=lambda x: f"{productos_con_stock.loc[x, 'nombre']} (Stock: {productos_con_stock.loc[x, 'stock_actual']})"
                 )
                 
                 col_cant, col_precio = st.columns(2)
+                cantidad = col_cant.number_input("Cantidad:", min_value=1.0, step=1.0, value=1.0)
                 
-                cantidad = col_cant.number_input("Cantidad:", min_value=1, value=1)
-                
-                # Lógica de precio: Tomamos el sugerido pero permitimos edición TOTAL
-                precio_unit_sug = float(productos_con_stock.loc[idx_prod, 'precio_sugerido'])
+                # Lógica de precio sugerido
+                precio_unit_sug = safe_float(productos_con_stock.loc[idx_prod, 'precio_v'])
                 sugerido_total = precio_unit_sug * cantidad
                 
-                # KEY IMPORTANTE: Para que Streamlit no pise lo que vos escribís
+                # Permite edición TOTAL (Atenciones o Extras)
                 monto_real_venta = col_precio.number_input(
                     "Monto TOTAL cobrado ($):", 
                     min_value=0.0, 
                     value=sugerido_total,
-                    key="precio_venta_manual",
-                    help="Si hiciste un descuento o cobraste extra, editá este número."
+                    key="precio_venta_manual"
                 )
                 
-                st.caption(f"💡 Referencia: El precio de lista para esta cantidad es ${sugerido_total}")
+                st.caption(f"💡 Precio de lista sugerido: ${sugerido_total:,.2f}")
                 
                 c1, c2 = st.columns(2)
-                cliente_nombre = c1.text_input("Cliente (opcional):")
-                metodo_pago_sel = c2.selectbox("Forma de Pago:", ["Efectivo", "Transferencia", "Tarjeta"])
-                
-                # Agregamos fecha por si querés registrar una venta de ayer
+                metodo_pago_sel = c1.selectbox("Forma de Pago:", ["Efectivo", "Mercado Pago", "Transferencia"])
                 fecha_v = st.date_input("Fecha de la venta:", date.today())
                 
                 btn_guardar = st.form_submit_button("✅ CONFIRMAR Y REGISTRAR VENTA")
 
-            # --- PROCESAMIENTO AL PRESIONAR BOTÓN ---
             if btn_guardar:
-                # Recuperamos el valor que vos escribiste del session_state
-                # Esto garantiza que si pusiste 800 en vez de 1000, se graben 800.
+                # Recuperamos el valor editado del session_state
                 precio_final_a_grabar = st.session_state.precio_venta_manual
-                id_p = int(productos_con_stock.loc[idx_prod, 'id'])
                 nombre_p = productos_con_stock.loc[idx_prod, 'nombre']
                 
                 try:
-                    # 1. INSERTAR VENTA (Con commit explícito para que aparezca en la caja)
-                    db_query("""
-                        INSERT INTO ventas (id_producto, cantidad, precio_total, cliente, metodo_pago, fecha)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    """, (id_p, cantidad, precio_final_a_grabar, cliente_nombre, metodo_pago_sel, fecha_v), commit=True)
+                    # 1. INSERTAR EN HISTORIAL (Para que aparezca en Caja y Rentabilidad)
+                    conn.execute("""
+                        INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta, metodo_pago)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (fecha_v.strftime("%Y-%m-%d"), nombre_p, cantidad, precio_final_a_grabar, metodo_pago_sel))
 
-                    # 2. DESCONTAR STOCK (Con commit explícito)
-                    db_query("UPDATE productos SET stock = stock - ? WHERE id = ?", (cantidad, id_p), commit=True)
+                    # 2. DESCONTAR STOCK ACTUAL
+                    conn.execute("UPDATE productos SET stock_actual = stock_actual - ? WHERE nombre = ?", 
+                                (cantidad, nombre_p))
 
-                    st.success(f"✔️ ¡Venta registrada! {nombre_p} por ${precio_final_a_grabar}")
+                    conn.commit()
+                    st.success(f"✔️ Venta registrada: {nombre_p} por ${precio_final_a_grabar:,.2f}")
                     
-                    # Limpiamos el valor manual para la próxima venta
+                    # Limpiar memoria de sesión
                     if 'precio_venta_manual' in st.session_state:
                         del st.session_state['precio_venta_manual']
                     
                     st.rerun()
                 except Exception as e:
-                    st.error(f"❌ Error al grabar: {e}. Avisar si el error persiste.")
+                    st.error(f"❌ Error al grabar: {e}")
     else:
-        st.error("No se encontraron productos en la base de datos. Verifique la tabla 'productos'.")
+        st.info("No hay productos marcados como 'Final' en el inventario.")
+    conn.close()
+
 
 # ---------------------------------------------------------
 # 5. CAJA Y EXCEL (RESTAURADO: FILTROS POR FECHA Y TOTALES)
