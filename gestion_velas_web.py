@@ -313,7 +313,7 @@ elif menu == "💰 Registro de Compras":
 
 
 # ==========================================
-# 🚀 REGISTRAR VENTAS (V.8.9 - PRECIOS DINÁMICOS)
+# 🚀 REGISTRAR VENTAS (V.8.9.5 - REACTIVO)
 # ==========================================
 elif menu == "🚀 Registrar Ventas":
     st.header("Registro de Ventas")
@@ -332,17 +332,17 @@ elif menu == "🚀 Registrar Ventas":
         if productos_con_stock.empty:
             st.warning("⚠️ No hay productos con stock disponible.")
         else:
-            # --- SELECCIÓN DE PRODUCTO ---
+            # 1. SELECCIÓN DE PRODUCTO (Fuera del form para reactividad)
             idx_prod = st.selectbox(
                 "Seleccione Producto:",
                 productos_con_stock.index.tolist(),
                 format_func=lambda x: f"{productos_con_stock.loc[x, 'nombre']} (Stock: {productos_con_stock.loc[x, 'stock_actual']})"
             )
             
-            # --- MUESTRA DE PRECIOS DE REFERENCIA ---
             p1 = safe_float(productos_con_stock.loc[idx_prod, 'precio_v'])
             p2 = safe_float(productos_con_stock.loc[idx_prod, 'precio_v2'])
             
+            # Cuadro de referencia visual
             st.markdown(f"""
             <div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px; border: 1px solid #d4af37;">
                 <strong>Precios de Referencia:</strong><br>
@@ -351,22 +351,24 @@ elif menu == "🚀 Registrar Ventas":
             """, unsafe_allow_html=True)
             st.write("")
 
-            # --- CONFIGURACIÓN DE VENTA ---
-            c_lista, c_cant = st.columns([1, 1])
+            # 2. CONFIGURACIÓN DINÁMICA
+            c_lista, c_cant = st.columns(2)
             tipo_lista = c_lista.radio("¿Qué lista aplicar?", ["Lista 1", "Lista 2"], horizontal=True)
             cantidad = c_cant.number_input("Cantidad de velas:", min_value=1.0, step=1.0, value=1.0)
             
-            # Cálculo automático basado en la selección
+            # --- CÁLCULO EN TIEMPO REAL ---
             precio_unitario = p1 if tipo_lista == "Lista 1" else p2
             sugerido_total = precio_unitario * cantidad
             
-            # --- FORMULARIO DE CIERRE ---
-            with st.form("f_venta_v89"):
+            # 3. FORMULARIO DE CIERRE
+            # Usamos un contenedor para que el monto se refresque antes de entrar al form
+            with st.form("f_venta_v895"):
+                # IMPORTANTE: Eliminamos el 'value' estático y dejamos que el cálculo mande
                 monto_real = st.number_input(
                     f"Monto TOTAL a cobrar (Calculado sobre {tipo_lista}):", 
                     min_value=0.0, 
-                    value=float(sugerido_total),
-                    key="monto_final_v89"
+                    value=float(sugerido_total), # <--- Aquí se produce la magia del cambio
+                    key="monto_final_input"
                 )
                 
                 c_pago, c_fecha = st.columns(2)
@@ -376,17 +378,18 @@ elif menu == "🚀 Registrar Ventas":
                 btn_confirmar = st.form_submit_button("✅ CONFIRMAR Y REGISTRAR VENTA")
 
             if btn_confirmar:
-                monto_final_grabar = st.session_state.monto_final_v89
+                # Obtenemos el valor final (editado o calculado)
+                monto_final_grabar = st.session_state.monto_final_input
                 nombre_p = productos_con_stock.loc[idx_prod, 'nombre']
                 
                 try:
-                    # 1. Registro en historial (Actualiza Caja y Rentabilidad)
+                    # Registro en historial
                     conn.execute("""
                         INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta, metodo_pago)
                         VALUES (?, ?, ?, ?, ?)
                     """, (fecha_v.strftime("%Y-%m-%d"), nombre_p, cantidad, monto_final_grabar, metodo_pago_sel))
 
-                    # 2. Descuento de stock
+                    # Descuento de stock
                     conn.execute("UPDATE productos SET stock_actual = stock_actual - ? WHERE nombre = ?", 
                                 (cantidad, nombre_p))
 
