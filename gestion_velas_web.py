@@ -313,7 +313,7 @@ elif menu == "💰 Registro de Compras":
 
 
 # ==========================================
-# 🚀 REGISTRAR VENTAS (V.8.9.5 - REACTIVO)
+# 🚀 REGISTRAR VENTAS (V.8.9.6 - REFRESH FIX)
 # ==========================================
 elif menu == "🚀 Registrar Ventas":
     st.header("Registro de Ventas")
@@ -342,11 +342,11 @@ elif menu == "🚀 Registrar Ventas":
             p1 = safe_float(productos_con_stock.loc[idx_prod, 'precio_v'])
             p2 = safe_float(productos_con_stock.loc[idx_prod, 'precio_v2'])
             
-            # Cuadro de referencia visual
+            # Cuadro de referencia visual (Formateado según tus preferencias)
             st.markdown(f"""
             <div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px; border: 1px solid #d4af37;">
                 <strong>Precios de Referencia:</strong><br>
-                💰 <b>Lista 1:</b> ${p1:,.2f} | 💰 <b>Lista 2:</b> ${p2:,.2f}
+                💰 <b>Lista 1:</b> ${int(p1):,}.replace(",", ".") | 💰 <b>Lista 2:</b> ${int(p2):,}.replace(",", ".")
             </div>
             """, unsafe_allow_html=True)
             st.write("")
@@ -358,17 +358,19 @@ elif menu == "🚀 Registrar Ventas":
             
             # --- CÁLCULO EN TIEMPO REAL ---
             precio_unitario = p1 if tipo_lista == "Lista 1" else p2
-            sugerido_total = precio_unitario * cantidad
+            sugerido_total = int(precio_unitario * cantidad) # Convertimos a entero
             
             # 3. FORMULARIO DE CIERRE
-            # Usamos un contenedor para que el monto se refresque antes de entrar al form
+            # Generamos una KEY DINÁMICA que cambie cuando cambie el producto, la lista o la cantidad.
+            # Esto obliga a Streamlit a redibujar el input con el nuevo valor.
+            key_dinamica = f"monto_{idx_prod}_{tipo_lista}_{cantidad}"
+
             with st.form("f_venta_v895"):
-                # IMPORTANTE: Eliminamos el 'value' estático y dejamos que el cálculo mande
                 monto_real = st.number_input(
                     f"Monto TOTAL a cobrar (Calculado sobre {tipo_lista}):", 
-                    min_value=0.0, 
-                    value=float(sugerido_total), # <--- Aquí se produce la magia del cambio
-                    key="monto_final_input"
+                    min_value=0, 
+                    value=sugerido_total,
+                    key=key_dinamica  # <--- LA CLAVE DE LA REACTIVIDAD
                 )
                 
                 c_pago, c_fecha = st.columns(2)
@@ -378,23 +380,22 @@ elif menu == "🚀 Registrar Ventas":
                 btn_confirmar = st.form_submit_button("✅ CONFIRMAR Y REGISTRAR VENTA")
 
             if btn_confirmar:
-                # Obtenemos el valor final (editado o calculado)
-                monto_final_grabar = st.session_state.monto_final_input
+                # Recuperamos el valor del estado usando la key dinámica
+                monto_final_grabar = st.session_state[key_dinamica]
                 nombre_p = productos_con_stock.loc[idx_prod, 'nombre']
                 
                 try:
-                    # Registro en historial
                     conn.execute("""
                         INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta, metodo_pago)
                         VALUES (?, ?, ?, ?, ?)
                     """, (fecha_v.strftime("%Y-%m-%d"), nombre_p, cantidad, monto_final_grabar, metodo_pago_sel))
 
-                    # Descuento de stock
                     conn.execute("UPDATE productos SET stock_actual = stock_actual - ? WHERE nombre = ?", 
                                 (cantidad, nombre_p))
 
                     conn.commit()
-                    st.success(f"✔️ Venta registrada: {nombre_p} por ${monto_final_grabar:,.2f}")
+                    # Formato de éxito con punto como miles
+                    st.success(f"✔️ Venta registrada: {nombre_p} por ${int(monto_final_grabar):,}".replace(",", "."))
                     st.rerun()
                 except Exception as e:
                     st.error(f"❌ Error al grabar: {e}")
