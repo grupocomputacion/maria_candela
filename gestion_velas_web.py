@@ -313,7 +313,7 @@ elif menu == "💰 Registro de Compras":
 
 
 # ==========================================
-# 🚀 REGISTRAR VENTAS (V.8.9.6 - REFRESH FIX)
+# 🚀 REGISTRAR VENTAS (V.8.9.7 - FINAL FIX)
 # ==========================================
 elif menu == "🚀 Registrar Ventas":
     st.header("Registro de Ventas")
@@ -327,50 +327,56 @@ elif menu == "🚀 Registrar Ventas":
         df_prod = None
 
     if df_prod is not None and not df_prod.empty:
+        # Filtrar solo los que tienen stock
         productos_con_stock = df_prod[df_prod['stock_actual'] > 0]
         
         if productos_con_stock.empty:
             st.warning("⚠️ No hay productos con stock disponible.")
         else:
-            # 1. SELECCIÓN DE PRODUCTO (Fuera del form para reactividad)
+            # 1. SELECCIÓN DE PRODUCTO (Fuera del form para reactividad total)
             idx_prod = st.selectbox(
                 "Seleccione Producto:",
                 productos_con_stock.index.tolist(),
                 format_func=lambda x: f"{productos_con_stock.loc[x, 'nombre']} (Stock: {productos_con_stock.loc[x, 'stock_actual']})"
             )
             
+            # Obtener precios base
             p1 = safe_float(productos_con_stock.loc[idx_prod, 'precio_v'])
             p2 = safe_float(productos_con_stock.loc[idx_prod, 'precio_v2'])
+
+            # --- PRE-FORMATEO PARA EL CUADRO VISUAL ---
+            # Formateamos aquí para que el HTML reciba el texto ya procesado
+            p1_str = f"{int(p1):,}".replace(",", ".")
+            p2_str = f"{int(p2):,}".replace(",", ".")
             
-            # Cuadro de referencia visual (Formateado según tus preferencias)
+            # Cuadro de referencia visual limpio
             st.markdown(f"""
             <div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px; border: 1px solid #d4af37;">
                 <strong>Precios de Referencia:</strong><br>
-                💰 <b>Lista 1:</b> ${int(p1):,}.replace(",", ".") | 💰 <b>Lista 2:</b> ${int(p2):,}.replace(",", ".")
+                💰 <b>Lista 1:</b> ${p1_str} | 💰 <b>Lista 2:</b> ${p2_str}
             </div>
             """, unsafe_allow_html=True)
             st.write("")
 
-            # 2. CONFIGURACIÓN DINÁMICA
+            # 2. CONFIGURACIÓN DE LA VENTA (Reactiva)
             c_lista, c_cant = st.columns(2)
             tipo_lista = c_lista.radio("¿Qué lista aplicar?", ["Lista 1", "Lista 2"], horizontal=True)
             cantidad = c_cant.number_input("Cantidad de velas:", min_value=1.0, step=1.0, value=1.0)
             
-            # --- CÁLCULO EN TIEMPO REAL ---
+            # Cálculo del monto sugerido
             precio_unitario = p1 if tipo_lista == "Lista 1" else p2
-            sugerido_total = int(precio_unitario * cantidad) # Convertimos a entero
+            sugerido_total = int(precio_unitario * cantidad)
             
             # 3. FORMULARIO DE CIERRE
-            # Generamos una KEY DINÁMICA que cambie cuando cambie el producto, la lista o la cantidad.
-            # Esto obliga a Streamlit a redibujar el input con el nuevo valor.
+            # La key_dinamica asegura que el monto se refresque si cambia producto, lista o cantidad
             key_dinamica = f"monto_{idx_prod}_{tipo_lista}_{cantidad}"
 
-            with st.form("f_venta_v895"):
+            with st.form("f_venta_v897"):
                 monto_real = st.number_input(
-                    f"Monto TOTAL a cobrar (Calculado sobre {tipo_lista}):", 
+                    f"Monto TOTAL a cobrar (Sugerido {tipo_lista}):", 
                     min_value=0, 
                     value=sugerido_total,
-                    key=key_dinamica  # <--- LA CLAVE DE LA REACTIVIDAD
+                    key=key_dinamica
                 )
                 
                 c_pago, c_fecha = st.columns(2)
@@ -380,23 +386,28 @@ elif menu == "🚀 Registrar Ventas":
                 btn_confirmar = st.form_submit_button("✅ CONFIRMAR Y REGISTRAR VENTA")
 
             if btn_confirmar:
-                # Recuperamos el valor del estado usando la key dinámica
+                # Usamos el valor que quedó en el input (por si el usuario lo editó a mano)
                 monto_final_grabar = st.session_state[key_dinamica]
                 nombre_p = productos_con_stock.loc[idx_prod, 'nombre']
                 
                 try:
+                    # Grabar en historial
                     conn.execute("""
                         INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta, metodo_pago)
                         VALUES (?, ?, ?, ?, ?)
                     """, (fecha_v.strftime("%Y-%m-%d"), nombre_p, cantidad, monto_final_grabar, metodo_pago_sel))
 
+                    # Actualizar stock
                     conn.execute("UPDATE productos SET stock_actual = stock_actual - ? WHERE nombre = ?", 
                                 (cantidad, nombre_p))
 
                     conn.commit()
-                    # Formato de éxito con punto como miles
-                    st.success(f"✔️ Venta registrada: {nombre_p} por ${int(monto_final_grabar):,}".replace(",", "."))
+                    
+                    # Mensaje de éxito formateado
+                    monto_exito = f"{int(monto_final_grabar):,}".replace(",", ".")
+                    st.success(f"✔️ Venta registrada: {nombre_p} por ${monto_exito}")
                     st.rerun()
+                    
                 except Exception as e:
                     st.error(f"❌ Error al grabar: {e}")
     else:
