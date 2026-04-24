@@ -32,6 +32,14 @@ def safe_float(val):
     except:
         return 0.0
 
+def safe_int(val):
+    try:
+        if val is None or str(val).strip() == "":
+            return 0
+        return int(float(val)) # El float es por si viene como "10.0"
+    except:
+        return 0    
+
 # ==========================================
 # 2. MENÚ LATERAL
 # ==========================================
@@ -90,10 +98,32 @@ if menu == "📦 Inventario y Alta":
             st.warning(f"Nuevos Precios: L1: ${p1:,.2f} | L2: ${p2:,.2f}")
             
             if st.button("Actualizar Precios"):
-                sql = "UPDATE productos SET margen1=:m1, margen2=:m2, precio_v=:p1, precio_v2=:p2 WHERE id=:id"
-                db_query(sql, {"m1": m1, "m2": m2, "p1": p1, "p2": p2, "id": int(row_p['id'])}, commit=True)
-                st.success("Precios actualizados")
-                st.rerun()
+                # 1. Obtenemos el ID de forma segura
+                raw_id = row_p.get('id')
+                
+                # 2. Validamos que el ID no sea nulo o vacío antes de convertirlo
+                if raw_id is not None and str(raw_id).strip() != "":
+                    try:
+                        id_limpio = int(float(raw_id))
+                        
+                        sql = "UPDATE productos SET margen1=:m1, margen2=:m2, precio_v=:p1, precio_v2=:p2 WHERE id=:id"
+                        
+                        # Ejecutamos la query con el ID validado
+                        db_query(sql, {
+                            "m1": float(m1), 
+                            "m2": float(m2), 
+                            "p1": float(p1), 
+                            "p2": float(p2), 
+                            "id": id_limpio
+                        }, commit=True)
+                        
+                        st.success("✅ Precios actualizados con éxito")
+                        st.rerun()
+                        
+                    except ValueError:
+                        st.error("❌ Error: El ID del producto tiene un formato inválido.")
+                else:
+                    st.error("❌ Error: No se pudo identificar el ID del producto (está vacío).")
 
     st.divider()
     df_ver = db_query("SELECT nombre, tipo, stock_actual, stock_minimo, unidad, costo_u, precio_v as \"Lista 1\", precio_v2 as \"Lista 2\" FROM productos ORDER BY tipo, nombre")
