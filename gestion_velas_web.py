@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import date
+from datetime import datetime, date
 import io
 from sqlalchemy import create_engine, text
 
@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, text
 st.set_page_config(page_title="Velas Candela Pro - Sistema Integral", layout="wide")
 
 # ==========================================
-# 1. MOTOR DE BASE DE DATOS
+# 1. MOTOR DE BASE DE DATOS (PROTEGIDO)
 # ==========================================
 @st.cache_resource
 def get_engine():
@@ -22,45 +22,42 @@ def get_engine():
 
 def db_query(query, params=None, commit=False):
     engine = get_engine()
-    if engine is None:
-        st.error("⚠️ Sin conexión a la base de datos. Verificá los secrets.")
-        return None
+    if engine is None: return None
     try:
         with engine.connect() as conn:
             if commit:
-                conn.execute(text(query), params or {})
+                conn.execute(text(query), params)
                 conn.commit()
                 return True
             else:
                 return pd.read_sql(text(query), conn, params=params)
     except Exception as e:
-        st.error(f"Error de BD: {e}")
+        if not commit: st.error(f"Error de BD: {e}")
         return None
 
 def safe_float(val):
     try:
-        if pd.isna(val) or str(val).strip() == "":
-            return 0.0
+        if pd.isna(val) or str(val).strip() == "": return 0.0
         return float(val)
-    except:
-        return 0.0
+    except: return 0.0
 
-def safe_int(val):
+# --- FUNCIONES DE ESTILO PARA RENTABILIDAD ---
+def color_margen(val):
     try:
-        return int(val)
-    except:
-        return 0
+        color = 'red' if val < 20 else 'orange' if val < 40 else 'green'
+        return f'color: {color}; font-weight: bold'
+    except: return ''
 
 # ==========================================
 # 2. MENÚ LATERAL
 # ==========================================
 st.sidebar.title("🕯️ Velas Control")
 menu = st.sidebar.radio("Ir a:", [
-    "📦 Inventario y Alta",
-    "🧪 Recetas y Costeo",
+    "📦 Inventario y Alta", 
+    "🧪 Recetas y Costeo", 
     "🏭 Fabricación",
-    "💰 Registro de Compras",
-    "🚀 Registrar Ventas",
+    "💰 Registro de Compras", 
+    "🚀 Registrar Ventas", 
     "📊 Caja y Filtros",
     "📈 Rentabilidad"
 ])
@@ -69,182 +66,65 @@ menu = st.sidebar.radio("Ir a:", [
 # 📦 1. INVENTARIO Y ALTA
 # ==========================================
 if menu == "📦 Inventario y Alta":
-    st.subheader("📦 Gestión de Inventario")
-
+    st.subheader("📦 Gestión de Inventario Profesional")
+    
     col_alta, col_imp = st.columns(2)
 
     with col_alta.expander("➕ DAR DE ALTA MANUAL"):
         with st.form("alta"):
             c1, c2 = st.columns(2)
-            n  = c1.text_input("Nombre")
-            t  = c2.selectbox("Tipo", ["Insumo", "Final", "Herramienta", "Packaging"])
-            u  = c1.selectbox("Unidad", ["Gr", "Ml", "Un", "Kg"])
-            s  = c2.number_input("Stock Inicial", min_value=0.0)
-            c  = c1.number_input("Costo Unitario ($)", min_value=0.0)
-            p1 = c2.number_input("Precio Minorista ($)", min_value=0.0)
-            p2 = c1.number_input("Precio Mayorista ($)", min_value=0.0)
-            if st.form_submit_button("Guardar"):
-                if not n.strip():
-                    st.warning("El nombre no puede estar vacío.")
-                else:
-                    ok = db_query(
-                        """INSERT INTO productos (nombre, tipo, unidad, stock_actual, costo_u, precio_v, precio_v2)
-                           VALUES (:n, :t, :u, :s, :c, :p1, :p2)""",
-                        {"n": n.strip(), "t": t, "u": u, "s": s, "c": c, "p1": p1, "p2": p2},
-                        commit=True
-                    )
-                    if ok:
-                        st.success(f"✅ '{n}' dado de alta.")
-                        st.rerun()
+            n = c1.text_input("Nombre")
+            t = c2.selectbox("Tipo", ["Insumo", "Final", "Herramienta", "Packaging"])
+            u = c1.selectbox("Unidad", ["Gr", "Ml", "Un", "Kg"])
+            s = c2.number_input("Stock Inicial", min_value=0.0)
+            c = c1.number_input("Costo Unitario ($)", min_value=0.0)
+            if st.form_submit_button("💾 Guardar"):
+                if n.strip():
+                    db_query("INSERT INTO productos (nombre, tipo, unidad, stock_actual, costo_u) VALUES (:n, :t, :u, :s, :c)",
+                             {"n": n.strip(), "t": t, "u": u, "s": s, "c": c}, commit=True)
+                    st.success(f"✅ {n} registrado.")
+                    st.rerun()
 
-    with col_imp.expander("📥 RESTAURACIÓN MAESTRA (Productos y Recetas)"):
-        # ── BUG FIX: leer bytes UNA vez para que el stream no se agote al cambiar pestaña ──
-        uploaded_file = st.file_uploader("Subir backup.xlsx", type=["xlsx"])
+    with col_imp.expander("📥 RESTAURACIÓN MAESTRA (Ventas, Recetas, Compras)"):
+        uploaded_file = st.file_uploader("Subir backup.xlsx", type=["xlsx"], key="restore_all")
         if uploaded_file:
-            file_bytes = uploaded_file.read()  # leer una vez en memoria
-            xls = pd.ExcelFile(io.BytesIO(file_bytes))
-            pestana = st.selectbox("Seleccione pestaña a restaurar:", xls.sheet_names)
+            xls = pd.ExcelFile(uploaded_file)
+            pestana = st.selectbox("Seleccione qué desea restaurar:", xls.sheet_names)
+            df_excel = pd.read_excel(uploaded_file, sheet_name=pestana)
+            df_excel.columns = [str(c).strip().lower() for c in df_excel.columns]
 
-            # preview
-            df_preview = pd.read_excel(io.BytesIO(file_bytes), sheet_name=pestana)
-            df_preview.columns = [str(c).strip().lower() for c in df_preview.columns]
-            st.caption(f"Vista previa: {len(df_preview)} filas · columnas: {', '.join(df_preview.columns)}")
-            st.dataframe(df_preview.head(5), use_container_width=True, hide_index=True)
-
-            # ── Detección inteligente del tipo de pestaña ──
-            cols = set(df_preview.columns)
-            es_receta   = {'id_final', 'id_insumo', 'cantidad'}.issubset(cols)
-            es_producto = {'nombre'}.issubset(cols) or {'producto'}.issubset(cols)
-            es_venta    = {'producto', 'total_venta', 'metodo_pago'}.issubset(cols)
-
-            if es_receta:
-                st.info("🧪 Detectado: **Recetas** (id_final, id_insumo, cantidad)")
-            elif es_venta:
-                st.info("🚀 Detectado: **Historial de Ventas**")
-            elif es_producto:
-                st.info("📦 Detectado: **Productos**")
-            else:
-                st.warning("⚠️ No se reconoce el tipo de pestaña. Revisá las columnas.")
-
-            modo_upsert = st.checkbox(
-                "🔄 Usar UPSERT (actualizar si ya existe, requiere columna 'id')",
-                value=False
-            )
-
-            if st.button(f"🚀 Iniciar Restauración de '{pestana}'"):
-                df_excel = df_preview  # ya normalizado
-                exitos, errores = 0, 0
-
-                with st.spinner("Procesando..."):
-                    for _, row in df_excel.iterrows():
+            if st.button(f"🚀 Restaurar {pestana}"):
+                with st.spinner(f"Migrando {pestana}..."):
+                    exitos = 0
+                    for i, row in df_excel.iterrows():
                         sql, params = None, None
-
-                        # ── RECETAS ──
-                        if es_receta:
-                            if pd.isna(row.get('id_final')) or pd.isna(row.get('id_insumo')):
-                                errores += 1
-                                continue
-                            sql = """INSERT INTO recetas (id_final, id_insumo, cantidad)
-                                     VALUES (:idf, :idi, :c)
-                                     ON CONFLICT DO NOTHING"""
-                            params = {
-                                "idf": safe_int(row['id_final']),
-                                "idi": safe_int(row['id_insumo']),
-                                "c":   safe_float(row['cantidad'])
-                            }
-
-                        # ── VENTAS ──
-                        elif es_venta:
-                            producto = row.get('producto', '')
-                            if pd.isna(producto) or str(producto).strip() == "":
-                                errores += 1
-                                continue
-                            sql = """INSERT INTO historial_ventas
-                                       (fecha, producto, cantidad, total_venta, metodo_pago)
-                                     VALUES (:f, :p, :c, :t, :m)"""
-                            params = {
-                                "f": str(row.get('fecha', date.today())),
-                                "p": str(producto),
-                                "c": safe_float(row.get('cantidad', 1)),
-                                "t": safe_float(row.get('total_venta', 0)),
-                                "m": str(row.get('metodo_pago', ''))
-                            }
-
-                        # ── PRODUCTOS ──
-                        elif es_producto:
-                            nombre = row.get('nombre', row.get('producto', ''))
-                            if pd.isna(nombre) or str(nombre).strip() == "":
-                                errores += 1
-                                continue
-                            if modo_upsert and 'id' in cols and not pd.isna(row.get('id')):
-                                sql = """INSERT INTO productos
-                                           (id, nombre, tipo, unidad, stock_actual, costo_u, precio_v, precio_v2)
-                                         VALUES (:id, :n, :t, :u, :s, :c, :p1, :p2)
-                                         ON CONFLICT (id) DO UPDATE SET
-                                           nombre=EXCLUDED.nombre, tipo=EXCLUDED.tipo,
-                                           unidad=EXCLUDED.unidad, stock_actual=EXCLUDED.stock_actual,
-                                           costo_u=EXCLUDED.costo_u, precio_v=EXCLUDED.precio_v,
-                                           precio_v2=EXCLUDED.precio_v2"""
-                                params = {
-                                    "id": safe_int(row['id']),
-                                    "n": str(nombre).strip(), "t": str(row.get('tipo', 'Insumo')),
-                                    "u": str(row.get('unidad', 'Un')),
-                                    "s": safe_float(row.get('stock_actual', 0)),
-                                    "c": safe_float(row.get('costo_u', 0)),
-                                    "p1": safe_float(row.get('precio_v', 0)),
-                                    "p2": safe_float(row.get('precio_v2', 0))
-                                }
-                            else:
-                                sql = """INSERT INTO productos
-                                           (nombre, tipo, unidad, stock_actual, costo_u, precio_v, precio_v2)
-                                         VALUES (:n, :t, :u, :s, :c, :p1, :p2)"""
-                                params = {
-                                    "n": str(nombre).strip(), "t": str(row.get('tipo', 'Insumo')),
-                                    "u": str(row.get('unidad', 'Un')),
-                                    "s": safe_float(row.get('stock_actual', 0)),
-                                    "c": safe_float(row.get('costo_u', 0)),
-                                    "p1": safe_float(row.get('precio_v', 0)),
-                                    "p2": safe_float(row.get('precio_v2', 0))
-                                }
-                        else:
-                            st.error("No se pudo determinar el tipo de datos. Revisá las columnas.")
-                            break
-
-                        if sql:
-                            ok = db_query(sql, params, commit=True)
-                            if ok:
-                                exitos += 1
-                            else:
-                                errores += 1
-
-                st.success(f"✅ {exitos} registros importados correctamente.")
-                if errores:
-                    st.warning(f"⚠️ {errores} filas con errores o vacías (omitidas).")
-                st.rerun()
+                        # LÓGICA PARA RECETAS
+                        if "id_final" in df_excel.columns:
+                            sql = "INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (:idf, :idi, :c)"
+                            params = {"idf": int(row['id_final']), "idi": int(row['id_insumo']), "c": safe_float(row['cantidad'])}
+                        # LÓGICA PARA VENTAS
+                        elif "total_venta" in df_excel.columns:
+                            sql = "INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta, metodo_pago) VALUES (:f, :p, :c, :t, :m)"
+                            params = {"f": str(row.get('fecha', date.today())), "p": str(row.get('producto', 'Vela')), "c": safe_float(row.get('cantidad', 1)), "t": safe_float(row.get('total_venta', 0)), "m": str(row.get('metodo_pago', 'Efectivo'))}
+                        # LÓGICA PARA PRODUCTOS (Si no es ninguna de las anteriores)
+                        elif "nombre" in df_excel.columns:
+                            sql = "INSERT INTO productos (nombre, tipo, unidad, stock_actual, costo_u, precio_v, precio_v2) VALUES (:n, :t, :u, :s, :c, :p1, :p2)"
+                            params = {"n": str(row['nombre']), "t": str(row.get('tipo', 'Insumo')), "u": str(row.get('unidad', 'Un')), "s": safe_float(row.get('stock_actual', 0)), "c": safe_float(row.get('costo_u', 0)), "p1": safe_float(row.get('precio_v', 0)), "p2": safe_float(row.get('precio_v2', 0))}
+                        
+                        if sql and db_query(sql, params, commit=True): exitos += 1
+                st.success(f"✅ Se restauraron {exitos} registros de {pestana}.")
 
     st.divider()
-
-    # Tabla con edición de precios inline
-    df_ver = db_query(
-        "SELECT id, nombre, tipo, unidad, stock_actual, costo_u, precio_v, precio_v2 "
-        "FROM productos WHERE nombre IS NOT NULL ORDER BY tipo, nombre"
-    )
-    if df_ver is not None and not df_ver.empty:
-        st.caption(f"Total: {len(df_ver)} productos")
-        st.dataframe(df_ver, use_container_width=True, hide_index=True)
-
-        # Botón para eliminar producto
-        with st.expander("🗑️ Eliminar producto"):
-            id_del = st.selectbox(
-                "Seleccioná el producto a eliminar:",
-                options=df_ver['id'].tolist(),
-                format_func=lambda x: df_ver[df_ver['id'] == x]['nombre'].values[0]
-            )
-            if st.button("🗑️ Confirmar eliminación", type="primary"):
-                db_query("DELETE FROM recetas WHERE id_final = :id OR id_insumo = :id", {"id": id_del}, commit=True)
-                db_query("DELETE FROM productos WHERE id = :id", {"id": id_del}, commit=True)
-                st.success("Producto eliminado.")
-                st.rerun()
+    df_inv = db_query("SELECT id, nombre, tipo, unidad, stock_actual, costo_u, precio_v, precio_v2 FROM productos WHERE nombre IS NOT NULL AND nombre != 'Sin nombre'")
+    if df_inv is not None:
+        df_inv = df_inv.fillna({'unidad': 'Un', 'tipo': 'Insumo', 'stock_actual': 0})
+        df_editado = st.data_editor(df_inv, hide_index=True, use_container_width=True, key="editor_inv", column_config={"id": None})
+        if st.button("💾 Guardar Cambios Inventario"):
+            for _, r in df_editado.iterrows():
+                db_query("UPDATE productos SET nombre=:n, tipo=:t, unidad=:u, stock_actual=:s, costo_u=:c, precio_v=:p1, precio_v2=:p2 WHERE id=:id",
+                         {"n": r['nombre'], "t": r['tipo'], "u": r['unidad'], "s": r['stock_actual'], "c": r['costo_u'], "p1": r['precio_v'], "p2": r['precio_v2'], "id": int(r['id'])}, commit=True)
+            st.success("Cambios guardados.")
+            st.rerun()
 
 # ==========================================
 # 🧪 2. RECETAS Y COSTEO
@@ -509,112 +389,52 @@ elif menu == "🚀 Registrar Ventas":
                         st.rerun()
 
 # ==========================================
-# 📊 6. CAJA Y FILTROS
+# 📊 6. CAJA Y FILTROS POR PERÍODO
 # ==========================================
 elif menu == "📊 Caja y Filtros":
-    st.header("📊 Movimientos de Caja")
+    st.header("📊 Análisis de Caja y Períodos")
+    c1, c2 = st.columns(2)
+    f_inicio = c1.date_input("Fecha Inicio", value=date.today().replace(day=1))
+    f_fin = c2.date_input("Fecha Fin", value=date.today())
 
-    col_f1, col_f2 = st.columns(2)
-    desde = col_f1.date_input("Desde:", value=date.today().replace(day=1))
-    hasta = col_f2.date_input("Hasta:", value=date.today())
-
-    df_v = db_query(
-        """SELECT fecha, producto, cantidad, total_venta, metodo_pago
-           FROM historial_ventas
-           WHERE fecha BETWEEN :d AND :h
-           ORDER BY fecha DESC""",
-        {"d": str(desde), "h": str(hasta)}
-    )
+    df_v = db_query("SELECT * FROM historial_ventas WHERE fecha BETWEEN :f1 AND :f2 ORDER BY fecha DESC", {"f1": f_inicio, "f2": f_fin})
 
     if df_v is not None and not df_v.empty:
-        total_gral = df_v['total_venta'].sum()
+        # Totales por método
+        efectivo = df_v[df_v['metodo_pago'].str.contains("Efectivo", na=False, case=False)]['total_venta'].sum()
+        banco = df_v[df_v['metodo_pago'].str.contains("Transferencia|Banco|MP|Mercado", na=False, case=False)]['total_venta'].sum()
+        tarjeta = df_v[df_v['metodo_pago'].str.contains("Tarjeta|Crédito", na=False, case=False)]['total_venta'].sum()
 
-        def total_por_metodo(palabras):
-            patron = '|'.join(palabras)
-            mask   = df_v['metodo_pago'].str.contains(patron, case=False, na=False)
-            return df_v[mask]['total_venta'].sum()
-
-        t_efectivo = total_por_metodo(['Efectivo'])
-        t_banco    = total_por_metodo(['Transferencia', 'Banco', 'Mercado Pago', 'MP'])
-        t_tarjeta  = total_por_metodo(['Tarjeta', 'Crédito', 'Débito'])
-
-        m0, m1, m2, m3 = st.columns(4)
-        m0.metric("💰 Total General",    f"$ {total_gral:,.2f}")
-        m1.metric("💵 Efectivo",         f"$ {t_efectivo:,.2f}")
-        m2.metric("🏦 Banco / Virtual",  f"$ {t_banco:,.2f}")
-        m3.metric("💳 Tarjeta / Deuda",  f"$ {t_tarjeta:,.2f}")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("💵 Efectivo", f"$ {efectivo:,.2f}")
+        m2.metric("🏦 Banco / MP", f"$ {banco:,.2f}")
+        m3.metric("💳 Tarjeta / Deuda", f"$ {tarjeta:,.2f}")
 
         st.divider()
-
-        # Mini gráfico de ventas diarias
-        df_v['fecha'] = pd.to_datetime(df_v['fecha'])
-        df_diario = df_v.groupby('fecha')['total_venta'].sum().reset_index()
-        st.bar_chart(df_diario.set_index('fecha')['total_venta'])
-
-        st.subheader("Detalle de operaciones")
         st.dataframe(df_v, use_container_width=True, hide_index=True)
-
-        # Exportar CSV
-        csv = df_v.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            "⬇️ Descargar CSV",
-            data=csv,
-            file_name=f"ventas_{desde}_{hasta}.csv",
-            mime="text/csv"
-        )
     else:
-        st.info("No hay ventas registradas en este período.")
+        st.info("No hay movimientos en este período.")
 
 # ==========================================
-# 📈 7. RENTABILIDAD
+# 📈 7. RENTABILIDAD (CORREGIDA)
 # ==========================================
 elif menu == "📈 Rentabilidad":
     st.header("📈 Análisis de Margen y Rentabilidad")
+    df_r = db_query("SELECT nombre, costo_u, precio_v, precio_v2 FROM productos WHERE UPPER(tipo) = 'FINAL' AND costo_u > 0")
 
-    df_r = db_query(
-        "SELECT nombre, costo_u, precio_v, precio_v2 "
-        "FROM productos WHERE UPPER(tipo) = 'FINAL' ORDER BY nombre"
-    )
-
-    if df_r is None or df_r.empty:
-        st.warning("No hay productos finales cargados.")
-        st.stop()
-
-    # Calcular márgenes evitando división por cero
-    df_r['Ganancia L1 ($)'] = df_r['precio_v'] - df_r['costo_u']
-    df_r['Ganancia L2 ($)'] = df_r['precio_v2'] - df_r['costo_u']
-
-    df_r['Margen L1 (%)'] = df_r.apply(
-        lambda x: (x['Ganancia L1 ($)'] / x['precio_v'] * 100) if x['precio_v'] > 0 else 0, axis=1
-    )
-    df_r['Margen L2 (%)'] = df_r.apply(
-        lambda x: (x['Ganancia L2 ($)'] / x['precio_v2'] * 100) if x['precio_v2'] > 0 else 0, axis=1
-    )
-
-    # Semáforo visual de márgenes
-    def color_margen(val):
-        if val >= 50:   return 'background-color: #d4edda'  # verde
-        elif val >= 25: return 'background-color: #fff3cd'  # amarillo
-        else:           return 'background-color: #f8d7da'  # rojo
-
-    styled = df_r.style.format({
-        "costo_u":      "$ {:.2f}",
-        "precio_v":     "$ {:.2f}",
-        "precio_v2":    "$ {:.2f}",
-        "Ganancia L1 ($)": "$ {:.2f}",
-        "Ganancia L2 ($)": "$ {:.2f}",
-        "Margen L1 (%)":   "{:.1f}%",
-        "Margen L2 (%)":   "{:.1f}%",
-    }).applymap(color_margen, subset=["Margen L1 (%)", "Margen L2 (%)"])
-
-    st.dataframe(styled, use_container_width=True, hide_index=True)
-
-    # Resumen ejecutivo
-    st.divider()
-    col1, col2 = st.columns(2)
-    col1.metric("📊 Margen L1 promedio", f"{df_r['Margen L1 (%)'].mean():.1f}%")
-    col2.metric("📊 Margen L2 promedio", f"{df_r['Margen L2 (%)'].mean():.1f}%")
-
-    productos_sin_receta = df_r[df_r['costo_u'] == 0]['nombre'].tolist()
-    if productos_sin_receta:
-        st.warning(f"⚠️ Productos sin costo calculado (sin receta): {', '.join(productos_sin_receta)}")
+    if df_r is not None and not df_r.empty:
+        df_r['Ganancia L1 ($)'] = df_r['precio_v'] - df_r['costo_u']
+        df_r['Margen L1 (%)'] = (df_r['Ganancia L1 ($)'] / df_r['precio_v'] * 100).fillna(0)
+        df_r['Ganancia L2 ($)'] = df_r['precio_v2'] - df_r['costo_u']
+        df_r['Margen L2 (%)'] = (df_r['Ganancia L2 ($)'] / df_r['precio_v2'] * 100).fillna(0)
+        
+        # Aplicamos el estilo nuevo (.map en lugar de .applymap)
+        styled = df_r.style.format({
+            "costo_u": "$ {:.2f}", "precio_v": "$ {:.2f}", "precio_v2": "$ {:.2f}",
+            "Ganancia L1 ($)": "$ {:.2f}", "Ganancia L2 ($)": "$ {:.2f}",
+            "Margen L1 (%)": "{:.1f}%", "Margen L2 (%)": "{:.1f}%"
+        }).map(color_margen, subset=["Margen L1 (%)", "Margen L2 (%)"])
+        
+        st.dataframe(styled, use_container_width=True, hide_index=True)
+    else:
+        st.warning("Asegurate de tener recetas cargadas con costos para ver este análisis.")
