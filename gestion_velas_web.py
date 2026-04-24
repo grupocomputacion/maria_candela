@@ -87,17 +87,16 @@ if menu == "📦 Inventario y Alta":
         uploaded_file = st.file_uploader("Subir archivo Excel", type=["xlsx", "xls"])
         if uploaded_file is not None:
             df_excel = pd.read_excel(uploaded_file)
-            st.write(f"📊 Se detectaron {len(df_excel)} registros en el Excel.")
+            st.write(f"📊 Se detectaron {len(df_excel)} registros.")
             
             if st.button("🚀 INICIAR CARGA A SUPABASE"):
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                exitos = 0
-                errores = 0
-                
-                # Iteramos con seguimiento
-                for i, row in df_excel.iterrows():
-                    try:
+                # Usamos un spinner para que veas que la app está "viva"
+                with st.spinner('⏳ Procesando y subiendo a la nube...'):
+                    progress_bar = st.progress(0)
+                    exitos = 0
+                    errores = 0
+                    
+                    for i, row in df_excel.iterrows():
                         sql = """INSERT INTO productos (nombre, tipo, unidad, stock_actual, stock_minimo, costo_u, margen1, margen2, precio_v, precio_v2) 
                                  VALUES (:nom, :tip, :uni, :stk, :min, :cst, :m1, :m2, :p1, :p2)"""
                         params = {
@@ -112,19 +111,22 @@ if menu == "📦 Inventario y Alta":
                             "p1": safe_float(row.get('precio_v', 0)),
                             "p2": safe_float(row.get('precio_v2', 0))
                         }
+                        
                         if db_query(sql, params, commit=True):
                             exitos += 1
+                        else:
+                            errores += 1
                         
-                        # Actualizamos barra de progreso
-                        progreso = (i + 1) / len(df_excel)
-                        progress_bar.progress(progreso)
-                        status_text.text(f"Procesando: {params['nom']}")
-                        
-                    except Exception as e:
-                        errores += 1
-                        st.error(f"Error en fila {i}: {e}")
-
-                st.success(f"✅ Proceso terminado. Exitos: {exitos} | Errores: {errores}")
+                        # Actualizar progreso
+                        progress_bar.progress((i + 1) / len(df_excel))
+                    
+                    st.toast(f"✅ Carga finalizada: {exitos} exitos", icon='🎉')
+                
+                if errores > 0:
+                    st.error(f"❌ Hubo {errores} errores. Revisá el log de la base de datos.")
+                
+                # Forzar recarga para ver los datos en la tabla
+                st.cache_data.clear()
                 st.rerun()
 
     st.divider()
