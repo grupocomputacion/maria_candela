@@ -87,47 +87,44 @@ if menu == "📦 Inventario y Alta":
         uploaded_file = st.file_uploader("Subir archivo Excel", type=["xlsx", "xls"])
         if uploaded_file is not None:
             df_excel = pd.read_excel(uploaded_file)
-            st.write(f"📊 Se detectaron {len(df_excel)} registros.")
+            st.write(f"📊 Registros detectados: {len(df_excel)}")
             
             if st.button("🚀 INICIAR CARGA A SUPABASE"):
-                # Usamos un spinner para que veas que la app está "viva"
-                with st.spinner('⏳ Procesando y subiendo a la nube...'):
+                with st.spinner('⏳ Procesando...'):
                     progress_bar = st.progress(0)
                     exitos = 0
-                    errores = 0
                     
                     for i, row in df_excel.iterrows():
-                        sql = """INSERT INTO productos (nombre, tipo, unidad, stock_actual, stock_minimo, costo_u, margen1, margen2, precio_v, precio_v2) 
-                                 VALUES (:nom, :tip, :uni, :stk, :min, :cst, :m1, :m2, :p1, :p2)"""
-                        params = {
-                            "nom": str(row.get('nombre', 'Sin nombre')),
-                            "tip": str(row.get('tipo', 'Insumo')),
-                            "uni": str(row.get('unidad', 'Un')),
-                            "stk": safe_float(row.get('stock_actual', 0)),
-                            "min": safe_float(row.get('stock_minimo', 0)),
-                            "cst": safe_float(row.get('costo_u', 0)),
-                            "m1": safe_float(row.get('margen1', 100)),
-                            "m2": safe_float(row.get('margen2', 100)),
-                            "p1": safe_float(row.get('precio_v', 0)),
-                            "p2": safe_float(row.get('precio_v2', 0))
-                        }
-                        
-                        if db_query(sql, params, commit=True):
-                            exitos += 1
-                        else:
-                            errores += 1
-                        
-                        # Actualizar progreso
-                        progress_bar.progress((i + 1) / len(df_excel))
-                    
-                    st.toast(f"✅ Carga finalizada: {exitos} exitos", icon='🎉')
-                
-                if errores > 0:
-                    st.error(f"❌ Hubo {errores} errores. Revisá el log de la base de datos.")
-                
-                # Forzar recarga para ver los datos en la tabla
-                st.cache_data.clear()
-                st.rerun()
+                        try:
+                            sql = """INSERT INTO productos (nombre, tipo, unidad, stock_actual, stock_minimo, costo_u, margen1, margen2, precio_v, precio_v2) 
+                                     VALUES (:nom, :tip, :uni, :stk, :min, :cst, :m1, :m2, :p1, :p2)"""
+                            params = {
+                                "nom": str(row.get('nombre', 'Sin nombre')),
+                                "tip": str(row.get('tipo', 'Insumo')),
+                                "uni": str(row.get('unidad', 'Un')),
+                                "stk": safe_float(row.get('stock_actual', 0)),
+                                "min": safe_float(row.get('stock_minimo', 0)),
+                                "cst": safe_float(row.get('costo_u', 0)),
+                                "m1": safe_float(row.get('margen1', 100)),
+                                "m2": safe_float(row.get('margen2', 100)),
+                                "p1": safe_float(row.get('precio_v', 0)),
+                                "p2": safe_float(row.get('precio_v2', 0))
+                            }
+                            
+                            # Intentamos insertar
+                            if db_query(sql, params, commit=True):
+                                exitos += 1
+                            
+                            progress_bar.progress((i + 1) / len(df_excel))
+                            
+                        except Exception as e:
+                            # EL CAMBIO CLAVE: Mostramos el error y DETENEMOS la app
+                            st.error(f"❌ ERROR CRÍTICO en fila {i} ({row.get('nombre')}):")
+                            st.code(str(e)) # Muestra el error técnico detallado
+                            st.stop() # Evita que desaparezca el mensaje
+
+                    st.success(f"✅ Carga completa: {exitos} registros subidos.")
+                    st.balloons()
 
     st.divider()
     
