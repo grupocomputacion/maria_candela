@@ -96,60 +96,39 @@ if menu == "📦 Inventario y Alta":
                 else:
                     st.error("El nombre no puede estar vacío.")
 
-    with col_imp.expander("📥 IMPORTAR / EXPORTAR (BACKUP)"):
-        # EXPORTAR (Funciona igual)
-        df_exp = db_query("SELECT * FROM productos WHERE nombre IS NOT NULL")
-        if df_exp is not None and not df_exp.empty:
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df_exp.to_excel(writer, index=False, sheet_name='Inventario')
-            st.download_button("📥 Descargar Backup Excel", output.getvalue(), f"backup_velas_{date.today()}.xlsx")
-        
-        st.divider()
-
-        # IMPORTAR (AQUÍ ESTÁ EL ARREGLO)
-        uploaded_file = st.file_uploader("Subir backup.xlsx", type=["xlsx"])
+with col_imp.expander("📥 RESTAURACIÓN MAESTRA (Ventas, Recetas, Compras)"):
+        uploaded_file = st.file_uploader("Subir backup.xlsx", type=["xlsx"], key="restore_all")
         if uploaded_file:
             xls = pd.ExcelFile(uploaded_file)
-            pestana = st.selectbox("Seleccione pestaña del Excel:", xls.sheet_names)
+            pestana = st.selectbox("Seleccione qué desea restaurar:", xls.sheet_names)
             df_excel = pd.read_excel(uploaded_file, sheet_name=pestana)
-            
-            # Limpiamos los nombres de las columnas del Excel (minúsculas y sin espacios)
             df_excel.columns = [str(c).strip().lower() for c in df_excel.columns]
-            
-            st.write(f"📊 Filas detectadas en el Excel: {len(df_excel)}")
-            
-            if st.button("🚀 FORZAR RESTAURACIÓN"):
-                with st.spinner("Subiendo datos a Supabase..."):
+
+            if st.button(f"🚀 Restaurar {pestana}"):
+                with st.spinner(f"Migrando {pestana}..."):
                     exitos = 0
                     for i, row in df_excel.iterrows():
-                        # Lógica de búsqueda flexible para el NOMBRE
-                        nombre = row.get('nombre', row.get('item', row.get('producto', row.get('vela', ''))))
+                        # LÓGICA PARA RECETAS
+                        if "id_final" in df_excel.columns:
+                            sql = "INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (:idf, :idi, :c)"
+                            params = {"idf": int(row['id_final']), "idi": int(row['id_insumo']), "c": float(row['cantidad'])}
                         
-                        # Si la fila está vacía, la saltamos
-                        if pd.isna(nombre) or str(nombre).strip() == "":
-                            continue
+                        # LÓGICA PARA VENTAS
+                        elif "total_venta" in df_excel.columns or "recaudado" in df_excel.columns:
+                            sql = """INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta, metodo_pago) 
+                                     VALUES (:f, :p, :c, :t, :m)"""
+                            params = {
+                                "f": str(row.get('fecha', date.today())),
+                                "p": str(row.get('producto', 'Vela')),
+                                "c": float(row.get('cantidad', 1)),
+                                "t": float(row.get('total_venta', row.get('recaudado', 0))),
+                                "m": str(row.get('metodo_pago', 'Efectivo'))
+                            }
                         
-                        # Mapeo flexible de columnas
-                        params = {
-                            "n": str(nombre).strip(),
-                            "t": str(row.get('tipo', 'Insumo')).capitalize(),
-                            "u": str(row.get('unidad', 'Un')),
-                            "s": safe_float(row.get('stock_actual', row.get('stock', 0))),
-                            "c": safe_float(row.get('costo_u', row.get('costo', 0))),
-                            "p1": safe_float(row.get('precio_v', row.get('precio', 0))),
-                            "p2": safe_float(row.get('precio_v2', row.get('precio2', 0)))
-                        }
-                        
-                        sql = """INSERT INTO productos (nombre, tipo, unidad, stock_actual, costo_u, precio_v, precio_v2) 
-                                 VALUES (:n, :t, :u, :s, :c, :p1, :p2)"""
-                        
-                        if db_query(sql, params, commit=True):
-                            exitos += 1
-                
-                st.success(f"✅ ¡Éxito! Se recuperaron {exitos} registros en Supabase.")
-                st.rerun()
+                        if db_query(sql, params, commit=True): exitos += 1
+                st.success(f"✅ Se restauraron {exitos} registros de {pestana}.")
 
+                
     st.divider()
     
     # --- FILTROS (CORRECCIÓN 1) ---
@@ -345,18 +324,39 @@ elif menu == "🚀 Registrar Ventas":
                     st.error("Stock insuficiente.")
 
 # ==========================================
-# 📊 6. CAJA Y FILTROS
+# 📊 6. CAJA Y FILTROS POR PERÍODO
 # ==========================================
 elif menu == "📊 Caja y Filtros":
-    st.header("📊 Resumen de Caja")
-    fecha_sel = st.date_input("Ver ventas del día:", value=date.today())
-    df_v = db_query("SELECT * FROM historial_ventas WHERE fecha = :f", {"f": fecha_sel})
+    st.header("📊 Análisis de Caja y Períodos")
     
+    # Filtro de Período
+    c1, c2 = st.columns(2)
+    f_inicio = c1.date_input("Fecha Inicio", value=date.today().replace(day=1))
+    f_fin = c2.date_input("Fecha Fin", value=date.today())
+
+    query_caja = """
+        SELECT * FROM historial_ventas 
+        WHERE fecha BETWEEN :f1 AND :f2 
+        ORDER BY fecha DESC
+    """
+    df_v = db_query(query_caja, {"f1": f_inicio, "f2": f_fin})
+
     if df_v is not None and not df_v.empty:
+        # Métricas de Medios de Pago
+        efectivo = df_v[df_v['metodo_pago'].str.contains("Efectivo", na=False)]['total_venta'].sum()
+        banco = df_v[df_v['metodo_pago'].str.contains("Transferencia|Banco", na=False)]['total_venta'].sum()
+        tarjeta = df_v[df_v['metodo_pago'].str.contains("Tarjeta|Crédito", na=False)]['total_venta'].sum()
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("💵 Efectivo", f"$ {efectivo:,.2f}")
+        m2.metric("🏦 Banco / MP", f"$ {banco:,.2f}")
+        m3.metric("💳 Deuda/Tarjeta", f"$ {tarjeta:,.2f}", delta="- Pendiente" if tarjeta > 0 else None)
+
+        st.divider()
+        st.subheader("Listado Detallado")
         st.dataframe(df_v, use_container_width=True, hide_index=True)
-        st.metric("TOTAL RECAUDADO", f"$ {df_v['total_venta'].sum():,.2f}")
     else:
-        st.info("No hay ventas registradas en esta fecha.")
+        st.info("No hay movimientos en este período.")
 
 # ==========================================
 # 📈 7. RENTABILIDAD
