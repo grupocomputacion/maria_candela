@@ -97,8 +97,8 @@ if menu == "📦 Inventario y Alta":
                     st.error("El nombre no puede estar vacío.")
 
     with col_imp.expander("📥 IMPORTAR / EXPORTAR (BACKUP)"):
-        # EXPORTAR (BACKUP)
-        df_exp = db_query("SELECT * FROM productos")
+        # EXPORTAR (Funciona igual)
+        df_exp = db_query("SELECT * FROM productos WHERE nombre IS NOT NULL")
         if df_exp is not None and not df_exp.empty:
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -107,34 +107,47 @@ if menu == "📦 Inventario y Alta":
         
         st.divider()
 
-        # IMPORTAR (RESTAURAR)
-        uploaded_file = st.file_uploader("Subir backup.xlsx para restaurar", type=["xlsx"])
+        # IMPORTAR (AQUÍ ESTÁ EL ARREGLO)
+        uploaded_file = st.file_uploader("Subir backup.xlsx", type=["xlsx"])
         if uploaded_file:
             xls = pd.ExcelFile(uploaded_file)
             pestana = st.selectbox("Seleccione pestaña del Excel:", xls.sheet_names)
             df_excel = pd.read_excel(uploaded_file, sheet_name=pestana)
-            if st.button("🚀 Iniciar Restauración"):
-                with st.spinner("Procesando datos..."):
+            
+            # Limpiamos los nombres de las columnas del Excel (minúsculas y sin espacios)
+            df_excel.columns = [str(c).strip().lower() for c in df_excel.columns]
+            
+            st.write(f"📊 Filas detectadas en el Excel: {len(df_excel)}")
+            
+            if st.button("🚀 FORZAR RESTAURACIÓN"):
+                with st.spinner("Subiendo datos a Supabase..."):
                     exitos = 0
-                    for _, row in df_excel.iterrows():
-                        # CORRECCIÓN 3: Evitar "Sin nombre" y nulos
-                        nombre_raw = row.get('nombre', '')
-                        if pd.isna(nombre_raw) or str(nombre_raw).strip() == "" or str(nombre_raw).lower() == "sin nombre":
+                    for i, row in df_excel.iterrows():
+                        # Lógica de búsqueda flexible para el NOMBRE
+                        nombre = row.get('nombre', row.get('item', row.get('producto', row.get('vela', ''))))
+                        
+                        # Si la fila está vacía, la saltamos
+                        if pd.isna(nombre) or str(nombre).strip() == "":
                             continue
+                        
+                        # Mapeo flexible de columnas
+                        params = {
+                            "n": str(nombre).strip(),
+                            "t": str(row.get('tipo', 'Insumo')).capitalize(),
+                            "u": str(row.get('unidad', 'Un')),
+                            "s": safe_float(row.get('stock_actual', row.get('stock', 0))),
+                            "c": safe_float(row.get('costo_u', row.get('costo', 0))),
+                            "p1": safe_float(row.get('precio_v', row.get('precio', 0))),
+                            "p2": safe_float(row.get('precio_v2', row.get('precio2', 0)))
+                        }
                         
                         sql = """INSERT INTO productos (nombre, tipo, unidad, stock_actual, costo_u, precio_v, precio_v2) 
                                  VALUES (:n, :t, :u, :s, :c, :p1, :p2)"""
-                        params = {
-                            "n": str(nombre_raw).strip(),
-                            "t": str(row.get('tipo', 'Insumo')),
-                            "u": str(row.get('unidad', 'Un')), # CORRECCIÓN 2: Evita el 'nam' asegurando string
-                            "s": safe_float(row.get('stock_actual', 0)),
-                            "c": safe_float(row.get('costo_u', 0)),
-                            "p1": safe_float(row.get('precio_v', 0)),
-                            "p2": safe_float(row.get('precio_v2', 0))
-                        }
-                        if db_query(sql, params, commit=True): exitos += 1
-                st.success(f"✅ Restauración finalizada: {exitos} registros válidos.")
+                        
+                        if db_query(sql, params, commit=True):
+                            exitos += 1
+                
+                st.success(f"✅ ¡Éxito! Se recuperaron {exitos} registros en Supabase.")
                 st.rerun()
 
     st.divider()
