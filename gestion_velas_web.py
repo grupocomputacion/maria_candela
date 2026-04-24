@@ -199,107 +199,105 @@ if menu == "📦 Inventario y Alta":
 elif menu == "🧪 Recetas y Costeo":
     st.header("🧪 Composición y Análisis de Costos")
     
-    # Traemos productos finales e insumos (limpios)
-    df_f = db_query("SELECT id, nombre FROM productos WHERE UPPER(tipo) = 'FINAL' AND nombre IS NOT NULL AND nombre != ''")
-    df_i = db_query("SELECT id, nombre, unidad, costo_u FROM productos WHERE UPPER(tipo) = 'INSUMO' AND nombre IS NOT NULL AND nombre != ''")
+    # Filtramos para no traer basura o registros vacíos
+    query_f = "SELECT id, nombre FROM productos WHERE UPPER(tipo) = 'FINAL' AND nombre IS NOT NULL AND nombre != '' AND nombre != 'Sin nombre'"
+    query_i = "SELECT id, nombre, unidad, costo_u FROM productos WHERE UPPER(tipo) = 'INSUMO' AND nombre IS NOT NULL AND nombre != ''"
+    
+    df_f = db_query(query_f)
+    df_i = db_query(query_i)
 
     if df_f is not None and not df_f.empty:
-        sel_f = st.selectbox("Seleccione Producto Final para ver/editar receta:", df_f['nombre'].tolist())
-        row_f = df_f[df_f['nombre'] == sel_f].iloc[0]
-        id_f = int(row_f['id'])
+        sel_f = st.selectbox("Seleccione Producto Final:", df_f['nombre'].tolist())
+        id_f = int(df_f[df_f['nombre'] == sel_f].iloc[0]['id'])
         
         c1, c2 = st.columns([1, 2])
         
         with c1:
             st.subheader("➕ Añadir Insumo")
             if df_i is not None and not df_i.empty:
-                with st.form("add_insumo_receta"):
-                    ins_nom = st.selectbox("Insumo:", df_i['nombre'].tolist())
-                    ins_data = df_i[df_i['nombre'] == ins_nom].iloc[0]
-                    cant_i = st.number_input(f"Cantidad ({ins_data['unidad']})", min_value=0.0, step=0.1)
-                    
+                with st.form("form_receta"):
+                    ins_sel = st.selectbox("Insumo:", df_i['nombre'].tolist())
+                    row_i = df_i[df_i['nombre'] == ins_sel].iloc[0]
+                    cant_i = st.number_input(f"Cantidad ({row_i['unidad']})", min_value=0.0, step=0.1)
                     if st.form_submit_button("Añadir a la Receta"):
                         if cant_i > 0:
                             db_query("INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (:idf, :idi, :c)",
-                                     {"idf": id_f, "idi": int(ins_data['id']), "c": cant_i}, commit=True)
-                            st.success("Insumo añadido")
+                                     {"idf": id_f, "idi": int(row_i['id']), "c": cant_i}, commit=True)
+                            st.success("Insumo añadido correctamente.")
                             st.rerun()
             else:
-                st.warning("Primero cargá insumos en el Inventario.")
+                st.warning("No hay insumos cargados en el Inventario.")
 
         with c2:
-            st.subheader(f"📋 Ficha Técnica: {sel_f}")
-            query_receta = """
+            st.subheader(f"📋 Ficha: {sel_f}")
+            df_rec = db_query("""
                 SELECT r.id, i.nombre, r.cantidad, i.unidad, i.costo_u, (r.cantidad * i.costo_u) as subtotal
-                FROM recetas r 
-                JOIN productos i ON r.id_insumo = i.id
+                FROM recetas r JOIN productos i ON r.id_insumo = i.id
                 WHERE r.id_final = :id
-            """
-            df_receta = db_query(query_receta, {"id": id_f})
+            """, {"id": id_f})
             
-            if df_receta is not None and not df_receta.empty:
-                st.table(df_receta[['nombre', 'cantidad', 'unidad', 'subtotal']])
-                costo_total = df_receta['subtotal'].sum()
-                st.metric("COSTO DE FABRICACIÓN", f"$ {costo_total:,.2f}")
+            if df_rec is not None and not df_rec.empty:
+                st.table(df_rec[['nombre', 'cantidad', 'unidad', 'subtotal']])
+                costo_total = df_rec['subtotal'].sum()
+                st.metric("COSTO TOTAL DE INSUMOS", f"$ {costo_total:,.2f}")
                 
-                # Actualizar el costo del producto final automáticamente
+                # Actualizar el costo unitario del producto final
                 db_query("UPDATE productos SET costo_u = :c WHERE id = :id", {"c": costo_total, "id": id_f}, commit=True)
                 
-                if st.button("🗑️ Vaciar Receta"):
+                if st.button("🗑️ Borrar Receta"):
                     db_query("DELETE FROM recetas WHERE id_final = :id", {"id": id_f}, commit=True)
                     st.rerun()
             else:
-                st.info("Este producto aún no tiene una receta definida.")
+                st.info("No hay insumos cargados para este producto.")
 
 # ==========================================
 # 🏭 3. FABRICACIÓN
 # ==========================================
 elif menu == "🏭 Fabricación":
     st.header("🏭 Registro de Producción")
-    st.info("Al confirmar, se sumará stock al producto final y se descontarán proporcionalmente los insumos.")
+    st.info("Esta acción sumará stock al producto final y descontará los insumos de la receta.")
 
     df_f = db_query("SELECT id, nombre FROM productos WHERE UPPER(tipo) = 'FINAL'")
     if df_f is not None and not df_f.empty:
-        with st.form("fabricar_form"):
-            sel_f = st.selectbox("¿Qué producto fabricaste?", df_f['nombre'].tolist())
-            cant_f = st.number_input("Cantidad de unidades producidas:", min_value=1, step=1)
+        with st.form("fabricar"):
+            prod_sel = st.selectbox("¿Qué producto fabricaste?", df_f['nombre'].tolist())
+            cantidad = st.number_input("Cantidad de unidades:", min_value=1, step=1)
             
             if st.form_submit_button("🚀 Confirmar Fabricación"):
-                id_f = int(df_f[df_f['nombre'] == sel_f].iloc[0]['id'])
+                id_f = int(df_f[df_f['nombre'] == prod_sel].iloc[0]['id'])
                 receta = db_query("SELECT id_insumo, cantidad FROM recetas WHERE id_final = :id", {"id": id_f})
                 
                 if receta is not None and not receta.empty:
                     # 1. Sumar stock al final
-                    db_query("UPDATE productos SET stock_actual = stock_actual + :c WHERE id = :id", 
-                             {"c": cant_f, "id": id_f}, commit=True)
-                    # 2. Restar insumos
-                    for _, row in receta.iterrows():
+                    db_query("UPDATE productos SET stock_actual = stock_actual + :c WHERE id = :id", {"c": cantidad, "id": id_f}, commit=True)
+                    # 2. Descontar insumos
+                    for _, r in receta.iterrows():
                         db_query("UPDATE productos SET stock_actual = stock_actual - :c WHERE id = :id", 
-                                 {"c": row['cantidad'] * cant_f, "id": int(row['id_insumo'])}, commit=True)
-                    st.success(f"✅ Se fabricaron {cant_f} {sel_f}. Stock e insumos actualizados.")
+                                 {"c": r['cantidad'] * cantidad, "id": int(r['id_insumo'])}, commit=True)
+                    st.success(f"✅ Producción registrada: {cantidad} unidades de {prod_sel}.")
                 else:
-                    st.error("❌ No se puede fabricar: El producto no tiene receta definida.")
+                    st.error("El producto no tiene receta. Cargala en 'Recetas y Costeo'.")
 
 # ==========================================
 # 💰 4. REGISTRO DE COMPRAS
 # ==========================================
 elif menu == "💰 Registro de Compras":
-    st.header("💰 Ingreso de Insumos y Mercadería")
-    df_i = db_query("SELECT id, nombre, unidad, stock_actual FROM productos WHERE UPPER(tipo) != 'FINAL'")
+    st.header("💰 Compra de Insumos / Mercadería")
+    df_i = db_query("SELECT id, nombre, unidad FROM productos WHERE UPPER(tipo) != 'FINAL'")
 
     if df_i is not None:
-        with st.form("compra_form"):
-            ins_sel = st.selectbox("Seleccione el Insumo comprado:", df_i['nombre'].tolist())
-            row_i = df_i[df_i['nombre'] == ins_sel].iloc[0]
+        with st.form("compra"):
+            ins_nom = st.selectbox("Insumo comprado:", df_i['nombre'].tolist())
+            row_i = df_i[df_i['nombre'] == ins_nom].iloc[0]
             c1, c2 = st.columns(2)
-            cant_c = c1.number_input(f"Cantidad comprada ({row_i['unidad']}):", min_value=0.01)
-            cost_c = c2.number_input("Costo Total de la compra ($):", min_value=0.01)
+            cant_c = c1.number_input(f"Cantidad ({row_i['unidad']}):", min_value=0.01)
+            cost_c = c2.number_input("Monto total pagado ($):", min_value=0.01)
             
-            if st.form_submit_button("📥 Registrar Ingreso"):
-                nuevo_costo_u = cost_c / cant_c
+            if st.form_submit_button("📥 Registrar Compra"):
+                n_costo = cost_c / cant_c
                 db_query("UPDATE productos SET stock_actual = stock_actual + :c, costo_u = :u WHERE id = :id",
-                         {"c": cant_c, "u": nuevo_costo_u, "id": int(row_i['id'])}, commit=True)
-                st.success(f"✅ Stock actualizado. Nuevo costo unitario: $ {nuevo_costo_u:,.2f}")
+                         {"c": cant_c, "u": n_costo, "id": int(row_i['id'])}, commit=True)
+                st.success("✅ Stock y costo actualizados.")
 
 # ==========================================
 # 🚀 5. REGISTRAR VENTAS
@@ -309,75 +307,59 @@ elif menu == "🚀 Registrar Ventas":
     df_p = db_query("SELECT id, nombre, precio_v, precio_v2, stock_actual FROM productos WHERE UPPER(tipo) = 'FINAL'")
 
     if df_p is not None and not df_p.empty:
-        sel_p = st.selectbox("Producto a vender:", df_p['nombre'].tolist())
+        sel_p = st.selectbox("Producto:", df_p['nombre'].tolist())
         row = df_p[df_p['nombre'] == sel_p].iloc[0]
         
-        st.write(f"📦 **Stock disponible:** {row['stock_actual']} unidades")
+        st.write(f"📦 Stock actual: **{row['stock_actual']}** unidades")
         
-        with st.form("venta_v"):
+        with st.form("venta"):
             c1, c2 = st.columns(2)
-            lista = c1.radio("Lista de Precios:", ["Minorista (L1)", "Mayorista (L2)"], horizontal=True)
+            lista = c1.radio("Lista de Precios:", ["Minorista (L1)", "Mayorista (L2)"])
             cant = c2.number_input("Cantidad:", min_value=1.0, step=1.0)
             
             precio_u = safe_float(row['precio_v']) if "L1" in lista else safe_float(row['precio_v2'])
-            total_sugerido = precio_u * cant
-            
-            monto_final = st.number_input("Monto final cobrado ($):", value=float(total_sugerido))
+            total_cobrar = st.number_input("Total a cobrar ($):", value=float(precio_u * cant))
             metodo = st.selectbox("Medio de Pago:", ["Efectivo", "Transferencia", "Mercado Pago"])
             
-            if st.form_submit_button("✅ Finalizar Venta"):
+            if st.form_submit_button("✅ Procesar Venta"):
                 if cant <= row['stock_actual']:
-                    # Grabar Historial
                     db_query("INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta, metodo_pago) VALUES (:f, :p, :c, :t, :m)",
-                             {"f": date.today(), "p": sel_p, "c": cant, "t": monto_final, "m": metodo}, commit=True)
-                    # Descontar Stock
-                    db_query("UPDATE productos SET stock_actual = stock_actual - :c WHERE id = :id", 
-                             {"c": cant, "id": int(row['id'])}, commit=True)
-                    st.success(f"✅ Venta registrada. Se descontaron {cant} unidades.")
+                             {"f": date.today(), "p": sel_p, "c": cant, "t": total_cobrar, "m": metodo}, commit=True)
+                    db_query("UPDATE productos SET stock_actual = stock_actual - :c WHERE id = :id", {"c": cant, "id": int(row['id'])}, commit=True)
+                    st.success("Venta realizada.")
                     st.rerun()
                 else:
-                    st.error("❌ No hay suficiente stock para realizar la venta.")
+                    st.error("Stock insuficiente.")
 
 # ==========================================
 # 📊 6. CAJA Y FILTROS
 # ==========================================
 elif menu == "📊 Caja y Filtros":
-    st.header("📊 Historial de Movimientos de Caja")
-    
-    fecha_f = st.date_input("Filtrar por fecha:", value=date.today())
-    df_v = db_query("SELECT fecha, producto, cantidad, total_venta, metodo_pago FROM historial_ventas WHERE fecha = :f", {"f": fecha_f})
+    st.header("📊 Resumen de Caja")
+    fecha_sel = st.date_input("Ver ventas del día:", value=date.today())
+    df_v = db_query("SELECT * FROM historial_ventas WHERE fecha = :f", {"f": fecha_sel})
     
     if df_v is not None and not df_v.empty:
         st.dataframe(df_v, use_container_width=True, hide_index=True)
-        col1, col2 = st.columns(2)
-        col1.metric("Ventas del Día", len(df_v))
-        col2.metric("Total Recaudado", f"$ {df_v['total_venta'].sum():,.2f}")
+        st.metric("TOTAL RECAUDADO", f"$ {df_v['total_venta'].sum():,.2f}")
     else:
-        st.info(f"No se registraron ventas el día {fecha_f}.")
+        st.info("No hay ventas registradas en esta fecha.")
 
 # ==========================================
 # 📈 7. RENTABILIDAD
 # ==========================================
 elif menu == "📈 Rentabilidad":
-    st.header("📈 Análisis de Rentabilidad Real")
-    st.write("Cálculo basado en el Costo de Fabricación actual vs. Precio de Venta.")
-
-    query_rent = """
-        SELECT nombre, costo_u, precio_v, precio_v2, stock_actual 
-        FROM productos WHERE UPPER(tipo) = 'FINAL'
-    """
-    df_r = db_query(query_rent)
+    st.header("📈 Análisis de Margen y Rentabilidad")
+    df_r = db_query("SELECT nombre, costo_u, precio_v, precio_v2 FROM productos WHERE UPPER(tipo) = 'FINAL' AND costo_u > 0")
 
     if df_r is not None and not df_r.empty:
         df_r['Ganancia L1 ($)'] = df_r['precio_v'] - df_r['costo_u']
-        df_r['Margen L1 (%)'] = (df_r['Ganancia L1 ($)'] / df_r['precio_v'] * 100).fillna(0)
+        df_r['Margen (%)'] = (df_r['Ganancia L1 ($)'] / df_r['precio_v'] * 100).fillna(0)
         
-        # Formateo para visualización
         st.dataframe(df_r.style.format({
-            "costo_u": "$ {:.2f}",
-            "precio_v": "$ {:.2f}",
-            "precio_v2": "$ {:.2f}",
-            "Ganancia L1 ($)": "$ {:.2f}",
-            "Margen L1 (%)": "{:.1f}%"
-        }), use_container_width=True, hide_index=True)        
-        
+            "costo_u": "$ {:.2f}", "precio_v": "$ {:.2f}", 
+            "precio_v2": "$ {:.2f}", "Ganancia L1 ($)": "$ {:.2f}",
+            "Margen (%)": "{:.1f}%"
+        }), use_container_width=True, hide_index=True)
+    else:
+        st.warning("Cargá las recetas para calcular la rentabilidad basada en costos reales.")
