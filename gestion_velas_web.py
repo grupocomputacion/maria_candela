@@ -83,31 +83,48 @@ if menu == "📦 Inventario y Alta":
                     st.rerun()
 
     # --- NUEVA FUNCIONALIDAD: IMPORTAR DESDE EXCEL ---
-    with col_imp.expander("📥 IMPORTAR DESDE EXCEL (BACKUP)"):
+    with col_imp.expander("📥 IMPORTAR DESDE EXCEL (MIGRACIÓN)"):
         uploaded_file = st.file_uploader("Subir archivo Excel", type=["xlsx", "xls"])
         if uploaded_file is not None:
             df_excel = pd.read_excel(uploaded_file)
-            st.write("Vista previa de los datos:")
-            st.dataframe(df_excel.head(), use_container_width=True)
+            st.write(f"📊 Se detectaron {len(df_excel)} registros en el Excel.")
             
-            if st.button("🚀 Cargar todo a Supabase"):
-                # Mapeamos las columnas del Excel a la base de datos
+            if st.button("🚀 INICIAR CARGA A SUPABASE"):
+                progress_bar = st.progress(0)
+                status_text = st.empty()
                 exitos = 0
-                for _, row in df_excel.iterrows():
-                    sql = """INSERT INTO productos (nombre, tipo, unidad, stock_actual, stock_minimo, costo_u) 
-                             VALUES (:nom, :tip, :uni, :stk, :min, :cst)"""
-                    params = {
-                        "nom": str(row.get('nombre', 'Sin nombre')),
-                        "tip": str(row.get('tipo', 'Insumo')),
-                        "uni": str(row.get('unidad', 'Un')),
-                        "stk": safe_float(row.get('stock_actual', 0)),
-                        "min": safe_float(row.get('stock_minimo', 0)),
-                        "cst": safe_float(row.get('costo_u', 0))
-                    }
-                    if db_query(sql, params, commit=True):
-                        exitos += 1
+                errores = 0
                 
-                st.success(f"✅ Se importaron {exitos} registros con éxito.")
+                # Iteramos con seguimiento
+                for i, row in df_excel.iterrows():
+                    try:
+                        sql = """INSERT INTO productos (nombre, tipo, unidad, stock_actual, stock_minimo, costo_u, margen1, margen2, precio_v, precio_v2) 
+                                 VALUES (:nom, :tip, :uni, :stk, :min, :cst, :m1, :m2, :p1, :p2)"""
+                        params = {
+                            "nom": str(row.get('nombre', 'Sin nombre')),
+                            "tip": str(row.get('tipo', 'Insumo')),
+                            "uni": str(row.get('unidad', 'Un')),
+                            "stk": safe_float(row.get('stock_actual', 0)),
+                            "min": safe_float(row.get('stock_minimo', 0)),
+                            "cst": safe_float(row.get('costo_u', 0)),
+                            "m1": safe_float(row.get('margen1', 100)),
+                            "m2": safe_float(row.get('margen2', 100)),
+                            "p1": safe_float(row.get('precio_v', 0)),
+                            "p2": safe_float(row.get('precio_v2', 0))
+                        }
+                        if db_query(sql, params, commit=True):
+                            exitos += 1
+                        
+                        # Actualizamos barra de progreso
+                        progreso = (i + 1) / len(df_excel)
+                        progress_bar.progress(progreso)
+                        status_text.text(f"Procesando: {params['nom']}")
+                        
+                    except Exception as e:
+                        errores += 1
+                        st.error(f"Error en fila {i}: {e}")
+
+                st.success(f"✅ Proceso terminado. Exitos: {exitos} | Errores: {errores}")
                 st.rerun()
 
     st.divider()
