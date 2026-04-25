@@ -63,11 +63,16 @@ menu = st.sidebar.radio("Ir a:", [
 ])
 
 # ==========================================
-# 📦 1. INVENTARIO Y ALTA (VERSIÓN DEFINITIVA)
+# 📦 1. INVENTARIO Y ALTA (VERSIÓN SIN CACHÉ)
 # ==========================================
 if menu == "📦 Inventario y Alta":
     st.subheader("📦 Gestión de Inventario y Control Maestro")
     
+    # Botón de emergencia para refrescar datos manualmente
+    if st.sidebar.button("🔄 Forzar Recarga de Datos"):
+        st.cache_data.clear()
+        st.rerun()
+
     col_alta, col_imp = st.columns(2)
 
     with col_alta.expander("➕ DAR DE ALTA MANUAL"):
@@ -82,98 +87,56 @@ if menu == "📦 Inventario y Alta":
                 if n.strip():
                     db_query("INSERT INTO productos (nombre, tipo, unidad, stock_actual, costo_u) VALUES (:n, :t, :u, :s, :c)",
                              {"n": n.strip().upper(), "t": t, "u": u, "s": s, "c": c}, commit=True)
+                    st.cache_data.clear()
                     st.success(f"✅ {n} registrado.")
-                    st.cache_resource.clear() # Limpia motor
                     st.rerun()
 
-    with col_imp.expander("🚀 MOTOR DE RESTAURACIÓN TOTAL (Auto-Detect)"):
-        st.write("Subí tu backup y el sistema identificará todo automáticamente.")
-        uploaded_file = st.file_uploader("Subir backup.xlsx", type=["xlsx"], key="restore_maestro")
-        
+    with col_imp.expander("🚀 MOTOR DE RESTAURACIÓN TOTAL"):
+        uploaded_file = st.file_uploader("Subir backup.xlsx", type=["xlsx"])
         if uploaded_file:
             xls = pd.ExcelFile(uploaded_file)
-            if st.button("🏁 INICIAR MIGRACIÓN Y LIMPIAR CACHÉ"):
-                log_container = st.container()
-                progress_bar = st.progress(0)
-                
-                for idx, sheet in enumerate(xls.sheet_names):
+            if st.button("🏁 INICIAR MIGRACIÓN COMPLETA"):
+                for sheet in xls.sheet_names:
                     df = pd.read_excel(uploaded_file, sheet_name=sheet)
                     df.columns = [str(c).strip().lower() for c in df.columns]
                     
-                    with log_container:
-                        st.markdown(f"**⏳ Procesando: `{sheet}`**")
-                    
-                    exitos = 0
+                    st.write(f"Procesando `{sheet}`...")
                     for _, row in df.iterrows():
-                        sql, params = None, None
-                        
-                        # PRODUCTOS
-                        if "nombre" in df.columns and ("tipo" in df.columns or "stock_actual" in df.columns):
+                        # Lógica para PRODUCTOS
+                        if "nombre" in df.columns:
                             sql = """INSERT INTO productos (nombre, tipo, unidad, stock_actual, costo_u, precio_v, precio_v2) 
                                      VALUES (:n, :t, :u, :s, :c, :p1, :p2)"""
                             params = {
-                                "n": str(row.get('nombre', row.get('producto', ''))).strip().upper(),
+                                "n": str(row.get('nombre', '')).strip().upper(),
                                 "t": str(row.get('tipo', 'Insumo')),
                                 "u": str(row.get('unidad', 'Un')),
-                                "s": safe_float(row.get('stock_actual', row.get('stock', 0))),
-                                "c": safe_float(row.get('costo_u', row.get('costo', 0))),
+                                "s": safe_float(row.get('stock_actual', 0)),
+                                "c": safe_float(row.get('costo_u', 0)),
                                 "p1": safe_float(row.get('precio_v', 0)),
                                 "p2": safe_float(row.get('precio_v2', 0))
                             }
-                        
-                        # RECETAS (Blindaje de IDs)
-                        elif "id_final" in df.columns or "cantidad" in df.columns:
+                        # Lógica para RECETAS
+                        elif "id_final" in df.columns:
                             sql = "INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (:idf, :idi, :c)"
-                            params = {
-                                "idf": int(row.get('id_final', 0)),
-                                "idi": int(row.get('id_insumo', 0)),
-                                "c": safe_float(row.get('cantidad', 0))
-                            }
-
-                        if sql and params:
-                            db_query(sql, params, commit=True)
-                            exitos += 1
-                    
-                    st.toast(f"Pestaña {sheet}: {exitos} filas.", icon="✅")
-                    progress_bar.progress((idx + 1) / len(xls.sheet_names))
+                            params = {"idf": int(row['id_final']), "idi": int(row['id_insumo']), "c": safe_float(row['cantidad'])}
+                        
+                        db_query(sql, params, commit=True)
                 
-                st.success("🏁 Proceso terminado.")
-                st.cache_data.clear() # CRUCIAL: Limpia los datos viejos de la pantalla
-                st.rerun()
-
-        st.divider()
-        # BOTÓN DE LIMPIEZA TOTAL CON CLAVE 3280
-        clave_borrado = st.text_input("Clave de seguridad para resetear:", type="password")
-        if st.button("🗑️ LIMPIAR TODO"):
-            if clave_borrado == "3280":
-                db_query("TRUNCATE TABLE recetas, historial_ventas, productos RESTART IDENTITY CASCADE", commit=True)
-                st.success("Bases vaciadas y contadores a cero.")
-                st.cache_data.clear()
+                st.cache_data.clear() # LIMPIEZA CRUCIAL
+                st.success("MIGRACIÓN EXITOSA")
                 st.rerun()
 
     st.divider()
     
-    # FILTROS Y BUSQUEDA
-    c1, c2 = st.columns([1, 2])
-    f_tipo = c1.multiselect("Tipo:", ["Insumo", "Final", "Herramienta", "Packaging"], default=["Insumo", "Final"])
-    f_busq = c2.text_input("🔍 Buscar:")
-
-    # Traemos datos y forzamos que no sea de caché
-    df_inv = db_query("SELECT id, nombre, tipo, unidad, stock_actual, costo_u, precio_v, precio_v2 FROM productos")
+    # MOSTRAR TABLA (SIN CACHÉ)
+    # Agregamos una query que ignore nulos para que no veas filas vacías
+    df_inv = db_query("SELECT id, nombre, tipo, unidad, stock_actual, costo_u FROM productos WHERE nombre IS NOT NULL")
     
     if df_inv is not None and not df_inv.empty:
-        # Limpieza de nulos para visualización
-        df_inv = df_inv.dropna(subset=['nombre'])
-        df_inv = df_inv[df_inv['tipo'].isin(f_tipo)]
-        if f_busq:
-            df_inv = df_inv[df_inv['nombre'].str.contains(f_busq.upper(), case=False, na=False)]
-            
-        st.data_editor(df_inv, hide_index=True, use_container_width=True, key="editor_inv", column_config={"id": None})
-        
-        # Backup
-        towrite = io.BytesIO()
-        df_inv.to_excel(towrite, index=False, engine='openpyxl')
-        st.download_button("📥 Generar Backup Excel", towrite.getvalue(), f"backup_{date.today()}.xlsx")
+        st.write("### Inventario Actual")
+        st.data_editor(df_inv, hide_index=True, use_container_width=True)
+    else:
+        st.warning("⚠️ No se detectan datos en Supabase. Intentá 'Forzar Recarga de Datos' en el lateral.")
 
         
 # ==========================================
