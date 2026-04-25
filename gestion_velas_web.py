@@ -97,26 +97,72 @@ if menu == "📦 Inventario y Alta":
         uploaded_file = st.file_uploader("Subir backup.xlsx", type=["xlsx"])
         if uploaded_file:
             if st.button("🏁 EJECUTAR RESTAURACIÓN"):
-                xls = pd.ExcelFile(uploaded_file)
-                for sheet in xls.sheet_names:
-                    df_ex = pd.read_excel(uploaded_file, sheet_name=sheet)
-                    df_ex.columns = [str(c).strip().lower() for c in df_ex.columns]
-                    for _, row in df_ex.iterrows():
-                        if "nombre" in df_ex.columns:
+                try:
+                    xls = pd.ExcelFile(uploaded_file)
+                    
+                    # 1. LIMPIEZA TOTAL PARA EVITAR DUPLICADOS
+                    db_query("TRUNCATE TABLE recetas, historial_ventas, saldos_caja RESTART IDENTITY CASCADE", commit=True)
+                    db_query("TRUNCATE TABLE productos RESTART IDENTITY CASCADE", commit=True)
+
+                    # 2. CARGAR PRODUCTOS
+                    if 'productos' in xls.sheet_names:
+                        df_p = pd.read_excel(xls, 'productos')
+                        df_p.columns = [str(c).strip().lower() for c in df_p.columns]
+                        for _, row in df_p.iterrows():
                             db_query("""INSERT INTO productos (nombre, tipo, unidad, stock_actual, costo_u, precio_v, precio_v2) 
                                      VALUES (:n, :t, :u, :s, :c, :p1, :p2)""",
                                      {"n": str(row.get('nombre', '')).strip().upper(), "t": str(row.get('tipo', 'Insumo')),
                                       "u": str(row.get('unidad', 'Un')), "s": safe_float(row.get('stock_actual', 0)),
                                       "c": safe_float(row.get('costo_u', 0)), "p1": safe_float(row.get('precio_v', 0)),
                                       "p2": safe_float(row.get('precio_v2', 0))}, commit=True)
-                st.cache_data.clear()
-                st.rerun()
+                    
+                    # 3. CREAR MAPA DE NOMBRES -> IDS NUEVOS (Para consistencia de recetas y ventas)
+                    prods_db = db_query("SELECT id, nombre FROM productos")
+                    mapa_id = dict(zip(prods_db['nombre'], prods_db['id']))
+
+                    # 4. CARGAR RECETAS (Mapeo por nombre de producto e insumo)
+                    if 'recetas' in xls.sheet_names:
+                        df_r = pd.read_excel(xls, 'recetas')
+                        df_r.columns = [str(c).strip().lower() for c in df_r.columns]
+                        # Nota: Si tu excel tiene 'nombre_final' y 'nombre_insumo' los usamos
+                        for _, row in df_r.iterrows():
+                            id_f = mapa_id.get(str(row.get('nombre_final', '')).strip().upper())
+                            id_i = mapa_id.get(str(row.get('nombre_insumo', '')).strip().upper())
+                            if id_f and id_i:
+                                db_query("INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (:idf, :idi, :c)",
+                                         {"idf": id_f, "idi": id_i, "c": safe_float(row.get('cantidad', 0))}, commit=True)
+
+                    # 5. CARGAR VENTAS
+                    if 'historial_ventas' in xls.sheet_names:
+                        df_v = pd.read_excel(xls, 'historial_ventas')
+                        df_v.columns = [str(c).strip().lower() for c in df_v.columns]
+                        for _, row in df_v.iterrows():
+                            prod_nombre = str(row.get('producto', '')).strip().upper()
+                            db_query("""INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta, metodo_pago, costo_momento)
+                                     VALUES (:f, :p, :c, :t, :m, :cm)""",
+                                     {"f": row.get('fecha'), "p": prod_nombre, "c": safe_float(row.get('cantidad', 0)),
+                                      "t": safe_float(row.get('total_venta', 0)), "m": str(row.get('metodo_pago', 'Efectivo')),
+                                      "cm": safe_float(db_query("SELECT costo_u FROM productos WHERE nombre = :n", {"n": prod_nombre}).iloc[0][0]) if prod_nombre in mapa_id else 0}, commit=True)
+
+                    # 6. SINCRONIZAR CAJA
+                    db_query("INSERT INTO saldos_caja (tipo_cuenta, saldo) VALUES ('Efectivo', 0), ('Banco', 0), ('Deuda_TC', 0) ON CONFLICT DO NOTHING", commit=True)
+                    db_query("""
+                        UPDATE saldos_caja SET saldo = (SELECT COALESCE(SUM(total_venta), 0) FROM historial_ventas WHERE LOWER(metodo_pago) LIKE '%efectivo%') WHERE tipo_cuenta = 'Efectivo';
+                        UPDATE saldos_caja SET saldo = (SELECT COALESCE(SUM(total_venta), 0) FROM historial_ventas WHERE LOWER(metodo_pago) NOT LIKE '%efectivo%' AND LOWER(metodo_pago) NOT LIKE '%tarjeta%') WHERE tipo_cuenta = 'Banco';
+                    """, commit=True)
+
+                    st.success("✅ Restauración Maestra completada y Caja sincronizada.")
+                    st.cache_data.clear()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Error en la restauración: {e}")
 
         st.divider()
         clave_b = st.text_input("Clave de Seguridad:", type="password")
         if st.button("🗑️ LIMPIAR TODAS LAS TABLAS"):
             if clave_b == "3280":
-                db_query("TRUNCATE TABLE recetas, historial_ventas, productos RESTART IDENTITY CASCADE", commit=True)
+                db_query("TRUNCATE TABLE recetas, historial_ventas, productos, saldos_caja RESTART IDENTITY CASCADE", commit=True)
+                db_query("INSERT INTO saldos_caja (tipo_cuenta, saldo) VALUES ('Efectivo', 0), ('Banco', 0), ('Deuda_TC', 0)", commit=True)
                 st.cache_data.clear()
                 st.rerun()
 
@@ -152,19 +198,15 @@ if menu == "📦 Inventario y Alta":
         if f_busq:
             df_inv = df_inv[df_inv['Nombre'].str.contains(f_busq.upper(), na=False)]
 
-        # Lógica de Color Profesional (Status Indicator)
-        # Creamos una columna visual que Streamlit reconoce para mostrar colores
+        # Lógica de Color Profesional
         df_inv['Estado'] = df_inv['Stock Actual'].apply(lambda x: "🟢" if x > 0 else "🔴")
-        
-        # Reordenar para que el estado esté al principio
         cols = ['Estado'] + [c for c in df_inv.columns if c != 'Estado']
         df_inv = df_inv[cols]
 
-        # Configuración de columnas (Decimales y Visualización)
         st.dataframe(
             df_inv,
             hide_index=True,
-            width='stretch', # Reemplazo de use_container_width según log
+            width='stretch',
             column_config={
                 "Stock Actual": st.column_config.NumberColumn("Stock Actual", format="%.2f"),
                 "Costo": st.column_config.NumberColumn("Costo", format="$ %.2f"),
@@ -174,7 +216,6 @@ if menu == "📦 Inventario y Alta":
             }
         )
         
-        # Exportación
         towrite = io.BytesIO()
         df_inv.to_excel(towrite, index=False, engine='openpyxl')
         st.download_button("📥 Exportar Inventario", towrite.getvalue(), "inventario_velas.xlsx")
@@ -604,48 +645,27 @@ elif menu == "💰 Flujo de Caja":
 elif menu == "📊 Análisis de Resultados":
     st.header("📊 Análisis de Negocio y Valoración")
     
-    try:
-        df_v = db_query("SELECT fecha, producto, cantidad, total_venta, costo_momento FROM historial_ventas")
+    # 1. Traer Ventas
+    df_v = db_query("SELECT fecha, producto, cantidad, total_venta, costo_momento FROM historial_ventas")
+    
+    if df_v is not None and not df_v.empty:
+        df_v['fecha'] = pd.to_datetime(df_v['fecha'])
+        df_v['Ganancia'] = df_v['total_venta'] - (df_v['cantidad'] * df_v['costo_momento'])
         
-        if df_v is not None and not df_v.empty:
-            # 1. Limpieza de datos (Evita el "Blanco")
-            df_v['fecha'] = pd.to_datetime(df_v['fecha'], errors='coerce')
-            df_v = df_v.dropna(subset=['fecha'])
-            df_v['costo_momento'] = df_v['costo_momento'].fillna(0).astype(float)
-            df_v['total_venta'] = df_v['total_venta'].fillna(0).astype(float)
-            
-            df_v['Costo Total'] = df_v['cantidad'] * df_v['costo_momento']
-            df_v['Ganancia'] = df_v['total_venta'] - df_v['Costo Total']
-            
-            # Agrupación por Mes
-            df_v['Mes'] = df_v['fecha'].dt.strftime('%Y-%m')
-            resumen = df_v.groupby('Mes').agg({
-                'total_venta': 'sum',
-                'Costo Total': 'sum',
-                'Ganancia': 'sum'
-            }).rename(columns={'total_venta': 'Ventas Totales'})
-            
-            st.subheader("📈 Rentabilidad Mensual")
-            st.dataframe(resumen.style.format("$ {:,.2f}"), use_container_width=True)
-            
-            # --- VALORACIÓN DE STOCK ---
-            st.divider()
-            st.subheader("📦 Valoración de Stock Actual")
-            df_stk = db_query("SELECT nombre, stock_actual, costo_u, precio_v, precio_v2 FROM productos WHERE stock_actual > 0 AND UPPER(tipo) = 'FINAL'")
-            
-            if df_stk is not None and not df_stk.empty:
-                df_stk['Val. Costo'] = df_stk['stock_actual'] * df_stk['costo_u']
-                df_stk['Val. L1'] = df_stk['stock_actual'] * df_stk['precio_v']
-                df_stk['Val. L2'] = df_stk['stock_actual'] * df_stk['precio_v2']
-                
-                c1, c2, c3 = st.columns(3)
-                c1.metric("📉 Capital Inmovilizado", f"$ {df_stk['Val. Costo'].sum():,.2f}")
-                c2.metric("💰 Forecast L1", f"$ {df_stk['Val. L1'].sum():,.2f}")
-                c3.metric("💰 Forecast L2", f"$ {df_stk['Val. L2'].sum():,.2f}")
-                
-                st.dataframe(df_stk[['nombre', 'stock_actual', 'Val. Costo', 'Val. L1', 'Val. L2']], hide_index=True)
-        else:
-            st.warning("⚠️ No se encontraron ventas para analizar. Verificá la tabla 'historial_ventas' en Supabase.")
-            
-    except Exception as e:
-        st.error(f"❌ Error al procesar el análisis: {e}")
+        # Agrupación por mes
+        df_v['Mes'] = df_v['fecha'].dt.strftime('%Y-%m')
+        resumen = df_v.groupby('Mes').agg({'total_venta':'sum', 'Ganancia':'sum'}).rename(columns={'total_venta':'Ventas'})
+        
+        st.subheader("📈 Rentabilidad Mensual")
+        st.dataframe(resumen.style.format("$ {:,.2f}"), use_container_width=True)
+    else:
+        st.warning("⚠️ Sin datos en el historial. Cargá el SQL en Supabase.")
+
+    # 2. Valoración de Stock (Independiente de las ventas)
+    st.divider()
+    st.subheader("📦 Valoración de Stock")
+    df_stk = db_query("SELECT nombre, stock_actual, costo_u, precio_v, precio_v2 FROM productos WHERE stock_actual > 0")
+    if df_stk is not None and not df_stk.empty:
+        val_costo = (df_stk['stock_actual'] * df_stk['costo_u']).sum()
+        st.metric("💰 Capital en Mercadería", f"$ {val_costo:,.2f}")
+        st.dataframe(df_stk, hide_index=True)
