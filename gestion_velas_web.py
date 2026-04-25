@@ -59,8 +59,8 @@ menu = st.sidebar.radio("Ir a:", [
     "💰 Registro de Compras", 
     "🚀 Registrar Ventas", 
     "📊 Caja y Filtros",
-    "📈 Rentabilidad"
-    "💰 Flujo de Caja"
+    "📈 Rentabilidad",
+    "💰 Flujo de Caja",
     "📊 Análisis de Resultados"
 ])
 
