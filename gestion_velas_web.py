@@ -502,7 +502,7 @@ elif menu == "💰 Registro de Compras":
     st.subheader("⚠️ Insumos con stock bajo (< 100)")
     df_bajo = db_query(
         "SELECT nombre, unidad, stock_actual, costo_u FROM productos "
-        "WHERE UPPER(tipo) != 'FINAL' AND stock_actual < 100 ORDER BY stock_actual"
+        "WHERE UPPER(tipo) != 'FINAL' AND stock_actual < 100000 ORDER BY stock_actual"
     )
     if df_bajo is not None and not df_bajo.empty:
         st.dataframe(df_bajo, use_container_width=True, hide_index=True)
