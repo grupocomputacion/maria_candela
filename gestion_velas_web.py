@@ -60,6 +60,8 @@ menu = st.sidebar.radio("Ir a:", [
     "🚀 Registrar Ventas", 
     "📊 Caja y Filtros",
     "📈 Rentabilidad"
+    "💰 Flujo de Caja"
+    "📊 Análisis de Resultados"
 ])
 
 # ==========================================
@@ -416,13 +418,13 @@ elif menu == "💰 Registro de Compras":
         st.success("Todos los insumos tienen stock suficiente.")
 
 # ==========================================
-# 🚀 5. REGISTRAR VENTAS
+# 🚀 5. REGISTRAR VENTAS (ACTUALIZADO)
 # ==========================================
 elif menu == "🚀 Registrar Ventas":
     st.header("🚀 Nueva Venta")
 
     df_p = db_query(
-        "SELECT id, nombre, precio_v, precio_v2, stock_actual "
+        "SELECT id, nombre, precio_v, precio_v2, stock_actual, costo_u "
         "FROM productos WHERE UPPER(tipo) = 'FINAL' ORDER BY nombre"
     )
 
@@ -435,6 +437,7 @@ elif menu == "🚀 Registrar Ventas":
 
     p1 = safe_float(row['precio_v'])
     p2 = safe_float(row['precio_v2'])
+    costo_u_actual = safe_float(row['costo_u']) # Capturamos el costo actual para la historia
 
     col_info, col_form = st.columns([1, 2])
     col_info.metric("📦 Stock disponible", f"{row['stock_actual']} un.")
@@ -443,6 +446,9 @@ elif menu == "🚀 Registrar Ventas":
 
     with col_form:
         with st.form("venta"):
+            # AGREGADO: Selector de fecha para permitir edición/registro retroactivo
+            fecha_v = st.date_input("Fecha de la venta:", value=date.today())
+            
             lista = st.radio("Lista de Precios:", ["Minorista (L1)", "Mayorista (L2)"], horizontal=True)
             cant  = st.number_input("Cantidad:", min_value=1.0, step=1.0)
 
@@ -463,20 +469,35 @@ elif menu == "🚀 Registrar Ventas":
                 if cant > safe_float(row['stock_actual']):
                     st.error(f"❌ Stock insuficiente. Disponible: {row['stock_actual']} unidades.")
                 else:
+                    # Guardamos la venta incluyendo el costo_momento para rentabilidad real
                     ok = db_query(
                         """INSERT INTO historial_ventas
-                             (fecha, producto, cantidad, total_venta, metodo_pago)
-                           VALUES (:f, :p, :c, :t, :m)""",
-                        {"f": date.today(), "p": sel_p, "c": cant,
-                         "t": total_cobrar, "m": metodo},
+                             (fecha, producto, cantidad, total_venta, metodo_pago, costo_momento)
+                           VALUES (:f, :p, :c, :t, :m, :cm)""",
+                        {"f": fecha_v, "p": sel_p, "c": cant,
+                         "t": total_cobrar, "m": metodo, "cm": costo_u_actual},
                         commit=True
                     )
+                    
                     if ok:
+                        # 1. Descontamos Stock
                         db_query(
                             "UPDATE productos SET stock_actual = stock_actual - :c WHERE id = :id",
                             {"c": cant, "id": int(row['id'])}, commit=True
                         )
+                        
+                        # 2. Impactamos en Flujo de Caja (Efectivo vs Banco)
+                        if metodo == "Efectivo":
+                            db_query("UPDATE saldos_caja SET saldo = saldo + :t WHERE tipo_cuenta = 'Efectivo'", 
+                                     {"t": total_cobrar}, commit=True)
+                        elif metodo in ["Transferencia", "Mercado Pago"]:
+                            db_query("UPDATE saldos_caja SET saldo = saldo + :t WHERE tipo_cuenta = 'Banco'", 
+                                     {"t": total_cobrar}, commit=True)
+                        # Nota: Si es tarjeta, no suma a efectivo/banco hasta que se liquide, 
+                        # pero queda registrado en el historial.
+
                         st.success(f"✅ Venta registrada: {cant} x {sel_p} = $ {total_cobrar:,.2f}")
+                        st.cache_data.clear() # Limpiamos caché para ver stock actualizado
                         st.rerun()
 
 # ==========================================
@@ -529,3 +550,95 @@ elif menu == "📈 Rentabilidad":
         st.dataframe(styled, use_container_width=True, hide_index=True)
     else:
         st.warning("Asegurate de tener recetas cargadas con costos para ver este análisis.")
+
+# ==========================================
+# 💰 8. CONTROL DE FLUJO DE CAJA
+# ==========================================
+elif menu == "💰 Flujo de Caja":
+    st.header("💰 Control de Flujo de Caja")
+    
+    # Visualización de métricas
+    df_saldos = db_query("SELECT tipo_cuenta, saldo FROM saldos_caja")
+    if df_saldos is not None:
+        efectivo = df_saldos[df_saldos['tipo_cuenta'] == 'Efectivo']['saldo'].values[0]
+        banco = df_saldos[df_saldos['tipo_cuenta'] == 'Banco']['saldo'].values[0]
+        deuda_tc = df_saldos[df_saldos['tipo_cuenta'] == 'Deuda_TC']['saldo'].values[0]
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("💵 Efectivo", f"$ {efectivo:,.2f}")
+        c2.metric("🏦 Banco / MP", f"$ {banco:,.2f}")
+        c3.metric("💳 Deuda Insumos (TC)", f"$ {deuda_tc:,.2f}", delta="- Pendiente de Pago", delta_color="inverse")
+
+    st.divider()
+    col_mov, col_pago = st.columns(2)
+
+    with col_mov:
+        st.subheader("🔄 Transferencias")
+        with st.form("transf"):
+            t_mov = st.selectbox("Movimiento:", ["Efectivo a Banco", "Banco a Efectivo"])
+            m_mov = st.number_input("Monto:", min_value=0.0)
+            if st.form_submit_button("Ejecutar"):
+                if "Efectivo a Banco" in t_mov:
+                    db_query("UPDATE saldos_caja SET saldo = saldo - :m WHERE tipo_cuenta = 'Efectivo'", {"m": m_mov}, commit=True)
+                    db_query("UPDATE saldos_caja SET saldo = saldo + :m WHERE tipo_cuenta = 'Banco'", {"m": m_mov}, commit=True)
+                else:
+                    db_query("UPDATE saldos_caja SET saldo = saldo - :m WHERE tipo_cuenta = 'Banco'", {"m": m_mov}, commit=True)
+                    db_query("UPDATE saldos_caja SET saldo = saldo + :m WHERE tipo_cuenta = 'Efectivo'", {"m": m_mov}, commit=True)
+                st.rerun()
+
+    with col_pago:
+        st.subheader("💳 Pagar Tarjeta")
+        with st.form("pago_tc"):
+            desde = st.selectbox("Pagar desde:", ["Banco", "Efectivo"])
+            m_tc = st.number_input("Monto a pagar de TC:", min_value=0.0)
+            if st.form_submit_button("Liquidar Deuda"):
+                db_query(f"UPDATE saldos_caja SET saldo = saldo - :m WHERE tipo_cuenta = '{desde}'", {"m": m_tc}, commit=True)
+                db_query("UPDATE saldos_caja SET saldo = saldo - :m WHERE tipo_cuenta = 'Deuda_TC'", {"m": m_tc}, commit=True)
+                st.success("Deuda amortizada.")
+                st.rerun()
+
+# ==========================================
+# 📈 9. ANÁLISIS DE RESULTADOS
+# ==========================================
+elif menu == "💰 Flujo de Caja":
+    st.header("💰 Control de Flujo de Caja")
+    
+    # Visualización de métricas
+    df_saldos = db_query("SELECT tipo_cuenta, saldo FROM saldos_caja")
+    if df_saldos is not None:
+        efectivo = df_saldos[df_saldos['tipo_cuenta'] == 'Efectivo']['saldo'].values[0]
+        banco = df_saldos[df_saldos['tipo_cuenta'] == 'Banco']['saldo'].values[0]
+        deuda_tc = df_saldos[df_saldos['tipo_cuenta'] == 'Deuda_TC']['saldo'].values[0]
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("💵 Efectivo", f"$ {efectivo:,.2f}")
+        c2.metric("🏦 Banco / MP", f"$ {banco:,.2f}")
+        c3.metric("💳 Deuda Insumos (TC)", f"$ {deuda_tc:,.2f}", delta="- Pendiente de Pago", delta_color="inverse")
+
+    st.divider()
+    col_mov, col_pago = st.columns(2)
+
+    with col_mov:
+        st.subheader("🔄 Transferencias")
+        with st.form("transf"):
+            t_mov = st.selectbox("Movimiento:", ["Efectivo a Banco", "Banco a Efectivo"])
+            m_mov = st.number_input("Monto:", min_value=0.0)
+            if st.form_submit_button("Ejecutar"):
+                if "Efectivo a Banco" in t_mov:
+                    db_query("UPDATE saldos_caja SET saldo = saldo - :m WHERE tipo_cuenta = 'Efectivo'", {"m": m_mov}, commit=True)
+                    db_query("UPDATE saldos_caja SET saldo = saldo + :m WHERE tipo_cuenta = 'Banco'", {"m": m_mov}, commit=True)
+                else:
+                    db_query("UPDATE saldos_caja SET saldo = saldo - :m WHERE tipo_cuenta = 'Banco'", {"m": m_mov}, commit=True)
+                    db_query("UPDATE saldos_caja SET saldo = saldo + :m WHERE tipo_cuenta = 'Efectivo'", {"m": m_mov}, commit=True)
+                st.rerun()
+
+    with col_pago:
+        st.subheader("💳 Pagar Tarjeta")
+        with st.form("pago_tc"):
+            desde = st.selectbox("Pagar desde:", ["Banco", "Efectivo"])
+            m_tc = st.number_input("Monto a pagar de TC:", min_value=0.0)
+            if st.form_submit_button("Liquidar Deuda"):
+                db_query(f"UPDATE saldos_caja SET saldo = saldo - :m WHERE tipo_cuenta = '{desde}'", {"m": m_tc}, commit=True)
+                db_query("UPDATE saldos_caja SET saldo = saldo - :m WHERE tipo_cuenta = 'Deuda_TC'", {"m": m_tc}, commit=True)
+                st.success("Deuda amortizada.")
+                st.rerun()  
