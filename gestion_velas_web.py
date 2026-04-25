@@ -214,7 +214,7 @@ if menu == "📦 Inventario y Alta":
     if df_inv is not None and not df_inv.empty:
         if f_tipo != "Todos": df_inv = df_inv[df_inv['Tipo'] == f_tipo]
         if f_stock == "Con Stock": df_inv = df_inv[df_inv['Stock'] > 0]
-        elif f_stock == "Sin Stock": df_inv = df_inv[df_inv['Stock'] <= 0
+        elif f_stock == "Sin Stock": df_inv = df_inv[df_inv['Stock'] <= 0]
 
 # ==========================================
 # 🧪 2. RECETAS Y COSTEO (VERSIÓN DEFINITIVA)
