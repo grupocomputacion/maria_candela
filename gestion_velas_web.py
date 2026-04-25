@@ -63,10 +63,10 @@ menu = st.sidebar.radio("Ir a:", [
 ])
 
 # ==========================================
-# 📦 1. INVENTARIO Y ALTA (CORREGIDO Y COMPLETO)
+# 📦 1. INVENTARIO Y ALTA (MOTOR DE MIGRACIÓN)
 # ==========================================
 if menu == "📦 Inventario y Alta":
-    st.subheader("📦 Gestión de Inventario Profesional")
+    st.subheader("📦 Gestión de Inventario y Control Maestro")
     
     col_alta, col_imp = st.columns(2)
 
@@ -85,92 +85,106 @@ if menu == "📦 Inventario y Alta":
                     st.success(f"✅ {n} registrado.")
                     st.rerun()
 
-    with col_imp.expander("📥 GESTIÓN DE DATOS (Backup / Restaurar / Limpiar)"):
-        # 4. OPCIÓN DE GUARDAR DATOS GENERANDO EXCEL (BACKUP)
-        df_export = db_query("SELECT * FROM productos WHERE nombre IS NOT NULL")
-        if df_export is not None and not df_export.empty:
-            towrite = io.BytesIO()
-            df_export.to_excel(towrite, index=False, engine='openpyxl')
-            st.download_button(label="📥 Descargar Inventario a Excel", 
-                               data=towrite.getvalue(), 
-                               file_name=f"backup_inventario_{date.today()}.xlsx", 
-                               mime="application/vnd.ms-excel")
+    with col_imp.expander("🚀 MOTOR DE RESTAURACIÓN TOTAL (Auto-Detect)"):
+        st.write("Subí tu backup y el sistema identificará y poblará Productos, Recetas, Ventas y Compras automáticamente.")
+        uploaded_file = st.file_uploader("Subir backup.xlsx", type=["xlsx"], key="restore_maestro")
         
-        st.divider()
-
-        # RESTAURACIÓN MAESTRA
-        uploaded_file = st.file_uploader("Subir backup.xlsx para importar", type=["xlsx"], key="restore_all")
         if uploaded_file:
             xls = pd.ExcelFile(uploaded_file)
-            pestana = st.selectbox("Seleccione qué desea restaurar:", xls.sheet_names)
-            df_excel = pd.read_excel(uploaded_file, sheet_name=pestana)
-            df_excel.columns = [str(col).strip().lower() for col in df_excel.columns]
-
-            if st.button(f"🚀 Iniciar Restauración de {pestana}"):
-                with st.spinner(f"Migrando {pestana}..."):
+            st.info(f"📂 Pestañas detectadas: {', '.join(xls.sheet_names)}")
+            
+            if st.button("🏁 INICIAR MIGRACIÓN COMPLETA"):
+                log_container = st.container() # Para el monitoreo
+                progress_bar = st.progress(0)
+                total_sheets = len(xls.sheet_names)
+                
+                for idx, sheet in enumerate(xls.sheet_names):
+                    df = pd.read_excel(uploaded_file, sheet_name=sheet)
+                    df.columns = [str(c).strip().lower() for c in df.columns]
+                    
+                    with log_container:
+                        st.markdown(f"**⏳ Procesando pestaña: `{sheet}`** ({len(df)} filas)")
+                        monitor_table = st.empty() # Display dinámico
+                        monitor_table.dataframe(df.head(3), use_container_width=True)
+                    
                     exitos = 0
-                    for i, row in df_excel.iterrows():
+                    for _, row in df.iterrows():
                         sql, params = None, None
-                        if "id_final" in df_excel.columns:
+                        
+                        # 1. DETECCIÓN: PRODUCTOS
+                        if "nombre" in df.columns and "tipo" in df.columns:
+                            sql = """INSERT INTO productos (nombre, tipo, unidad, stock_actual, costo_u, precio_v, precio_v2) 
+                                     VALUES (:n, :t, :u, :s, :c, :p1, :p2)"""
+                            params = {
+                                "n": str(row.get('nombre', '')), "t": str(row.get('tipo', 'Insumo')),
+                                "u": str(row.get('unidad', 'Un')), "s": safe_float(row.get('stock_actual', 0)),
+                                "c": safe_float(row.get('costo_u', 0)), "p1": safe_float(row.get('precio_v', 0)),
+                                "p2": safe_float(row.get('precio_v2', 0))
+                            }
+                        
+                        # 2. DETECCIÓN: RECETAS
+                        elif "id_final" in df.columns and "id_insumo" in df.columns:
                             sql = "INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (:idf, :idi, :c)"
                             params = {"idf": int(row['id_final']), "idi": int(row['id_insumo']), "c": safe_float(row['cantidad'])}
-                        elif "total_venta" in df_excel.columns:
-                            sql = "INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta, metodo_pago) VALUES (:f, :p, :c, :t, :m)"
-                            params = {"f": str(row.get('fecha', date.today())), "p": str(row.get('producto', 'Vela')), "c": safe_float(row.get('cantidad', 1)), "t": safe_float(row.get('total_venta', 0)), "m": str(row.get('metodo_pago', 'Efectivo'))}
-                        elif "nombre" in df_excel.columns:
-                            sql = "INSERT INTO productos (nombre, tipo, unidad, stock_actual, costo_u, precio_v, precio_v2) VALUES (:n, :t, :u, :s, :c, :p1, :p2)"
-                            params = {"n": str(row['nombre']), "t": str(row.get('tipo', 'Insumo')), "u": str(row.get('unidad', 'Un')), "s": safe_float(row.get('stock_actual', 0)), "c": safe_float(row.get('costo_u', 0)), "p1": safe_float(row.get('precio_v', 0)), "p2": safe_float(row.get('precio_v2', 0))}
                         
-                        if sql and db_query(sql, params, commit=True): exitos += 1
-                st.success(f"✅ Se restauraron {exitos} registros.")
-                st.rerun()
-        
-        st.divider()
+                        # 3. DETECCIÓN: VENTAS
+                        elif "total_venta" in df.columns or "metodo_pago" in df.columns:
+                            sql = """INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta, metodo_pago) 
+                                     VALUES (:f, :p, :c, :t, :m)"""
+                            params = {
+                                "f": str(row.get('fecha', date.today())), "p": str(row.get('producto', 'Desconocido')),
+                                "c": safe_float(row.get('cantidad', 1)), "t": safe_float(row.get('total_venta', 0)),
+                                "m": str(row.get('metodo_pago', 'Efectivo'))
+                            }
 
-        # 5. OPCIÓN DE LIMPIAR DATOS CON CLAVE 3280
-        st.warning("⚠️ Zona de Peligro")
-        clave = st.text_input("Ingrese clave para borrar TODO el sistema:", type="password")
-        if st.button("🗑️ LIMPIAR TODAS LAS TABLAS"):
-            if clave == "3280":
-                db_query("DELETE FROM recetas", commit=True)
-                db_query("DELETE FROM historial_ventas", commit=True)
-                db_query("DELETE FROM productos", commit=True)
-                st.success("💥 Sistema reseteado a cero.")
+                        # 4. DETECCIÓN: COMPRAS (HISTORIAL)
+                        elif "costo_total" in df.columns or "proveedor" in df.columns:
+                            # Asegurate de tener esta tabla en Supabase. Si no, la creamos al vuelo.
+                            sql = """INSERT INTO historial_compras (fecha, insumo, cantidad, costo_total) 
+                                     VALUES (:f, :i, :c, :t)"""
+                            params = {
+                                "f": str(row.get('fecha', date.today())), "i": str(row.get('insumo', row.get('nombre', ''))),
+                                "c": safe_float(row.get('cantidad', 0)), "t": safe_float(row.get('costo_total', 0))
+                            }
+
+                        if sql and db_query(sql, params, commit=True):
+                            exitos += 1
+                    
+                    st.toast(f"✅ Pestaña {sheet} terminada. {exitos} registros.")
+                    progress_bar.progress((idx + 1) / total_sheets)
+                
+                st.success("🏁 Migración finalizada con éxito.")
                 st.rerun()
-            else:
-                st.error("Clave incorrecta")
 
     st.divider()
     
-    # 1 y 2. FILTROS Y BÚSQUEDA (REINTEGRADOS)
-    c_f1, c_f2 = st.columns([1, 2])
-    filtro_tipo = c_f1.multiselect("Filtrar por Tipo:", ["Insumo", "Final", "Herramienta", "Packaging"], default=["Insumo", "Final", "Herramienta", "Packaging"])
-    busqueda = c_f2.text_input("🔍 Buscar por nombre de producto/insumo:")
+    # FILTROS Y BÚSQUEDA
+    c1, c2 = st.columns([1, 2])
+    f_tipo = c1.multiselect("Filtrar Tipo:", ["Insumo", "Final", "Herramienta", "Packaging"], default=["Insumo", "Final"])
+    f_busq = c2.text_input("🔍 Buscar por nombre:", "")
 
-    # 3. ELIMINACIÓN DE REPETIDOS CON CERO (Mediante Query)
-    # Solo traemos items que tengan nombre válido y stock o costo para evitar "fantasmas" vacíos
-    df_inv = db_query("""
-        SELECT id, nombre, tipo, unidad, stock_actual, costo_u, precio_v, precio_v2 
-        FROM productos 
-        WHERE nombre IS NOT NULL AND nombre != 'Sin nombre' AND nombre != ''
-    """)
-
+    df_inv = db_query("SELECT id, nombre, tipo, unidad, stock_actual, costo_u, precio_v, precio_v2 FROM productos WHERE nombre IS NOT NULL")
+    
     if df_inv is not None and not df_inv.empty:
-        # Aplicar Filtros en el DataFrame
-        df_inv = df_inv[df_inv['tipo'].isin(filtro_tipo)]
-        if busqueda:
-            df_inv = df_inv[df_inv['nombre'].str.contains(busqueda, case=False, na=False)]
-        
-        # Edición Directa
-        df_inv = df_inv.fillna({'unidad': 'Un', 'tipo': 'Insumo', 'stock_actual': 0, 'costo_u': 0})
+        # Aplicamos filtros
+        df_inv = df_inv[df_inv['tipo'].isin(f_tipo)]
+        if f_busq:
+            df_inv = df_inv[df_inv['nombre'].str.contains(f_busq, case=False, na=False)]
+            
         df_editado = st.data_editor(df_inv, hide_index=True, use_container_width=True, key="editor_inv", column_config={"id": None})
         
-        if st.button("💾 Guardar Cambios Inventario"):
+        c_btn1, c_btn2 = st.columns(2)
+        if c_btn1.button("💾 Guardar Cambios"):
             for _, r in df_editado.iterrows():
                 db_query("UPDATE productos SET nombre=:n, tipo=:t, unidad=:u, stock_actual=:s, costo_u=:c, precio_v=:p1, precio_v2=:p2 WHERE id=:id",
                          {"n": r['nombre'], "t": r['tipo'], "u": r['unidad'], "s": r['stock_actual'], "c": r['costo_u'], "p1": r['precio_v'], "p2": r['precio_v2'], "id": int(r['id'])}, commit=True)
             st.success("Cambios guardados.")
             st.rerun()
+        
+        # Botón de backup rápido
+        towrite = io.BytesIO()
+        df_inv.to_excel(towrite, index=False, engine='openpyxl')
+        c_btn2.download_button("📥 Generar Backup Excel", towrite.getvalue(), f"backup_{date.today()}.xlsx")
 
 # ==========================================
 # 🧪 2. RECETAS Y COSTEO
