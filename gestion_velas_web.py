@@ -123,7 +123,7 @@ if menu == "📦 Inventario y Alta":
     # --- FILTROS PROFESIONALES UNIFORMES ---
     f1, f2, f3 = st.columns(3)
     with f1:
-        f_tipo = st.selectbox("Filtrar por Tipo:", ["Todos", "Insumo", "Final", "Herramienta", "Packaging"])
+        f_tipo = st.selectbox("Filtrar por Tipo:", ["Todos", "insumo", "final", "herramienta", "packaging"])
     with f2:
         f_stock = st.selectbox("Filtrar por Stock:", ["Todos", "Con Stock", "Sin Stock"])
     with f3:
