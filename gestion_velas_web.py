@@ -63,15 +63,14 @@ menu = st.sidebar.radio("Ir a:", [
 ])
 
 # ==========================================
-# 📦 1. INVENTARIO Y ALTA (ESTABILIDAD TOTAL)
+# 📦 1. INVENTARIO Y ALTA (VERSIÓN PROFESIONAL)
 # ==========================================
 if menu == "📦 Inventario y Alta":
     st.subheader("📦 Gestión de Inventario Profesional")
     
-    # 1. BOTÓN DE RESET DE CACHÉ (Con feedback visual)
-    if st.sidebar.button("🔄 Refrescar Base de Datos"):
+    # Botón de sincronización con feedback directo
+    if st.sidebar.button("🔄 Sincronizar Base de Datos"):
         st.cache_data.clear()
-        st.sidebar.success("Caché limpiada")
         st.rerun()
 
     col_alta, col_imp = st.columns(2)
@@ -92,10 +91,10 @@ if menu == "📦 Inventario y Alta":
                     st.success(f"✅ {n} registrado.")
                     st.rerun()
 
-    with col_imp.expander("🚀 GESTIÓN DE DATOS (Importar / Limpiar)"):
+    with col_imp.expander("🚀 GESTIÓN DE DATOS (Restauración / Limpieza)"):
         uploaded_file = st.file_uploader("Subir backup.xlsx", type=["xlsx"])
         if uploaded_file:
-            if st.button("🏁 INICIAR RESTAURACIÓN"):
+            if st.button("🏁 EJECUTAR RESTAURACIÓN"):
                 xls = pd.ExcelFile(uploaded_file)
                 for sheet in xls.sheet_names:
                     df_ex = pd.read_excel(uploaded_file, sheet_name=sheet)
@@ -109,30 +108,28 @@ if menu == "📦 Inventario y Alta":
                                       "c": safe_float(row.get('costo_u', 0)), "p1": safe_float(row.get('precio_v', 0)),
                                       "p2": safe_float(row.get('precio_v2', 0))}, commit=True)
                 st.cache_data.clear()
-                st.success("✅ Datos restaurados.")
                 st.rerun()
 
         st.divider()
-        clave_b = st.text_input("Clave para borrar todo:", type="password")
-        if st.button("🗑️ LIMPIAR TODO"):
+        clave_b = st.text_input("Clave de Seguridad:", type="password")
+        if st.button("🗑️ LIMPIAR TODAS LAS TABLAS"):
             if clave_b == "3280":
                 db_query("TRUNCATE TABLE recetas, historial_ventas, productos RESTART IDENTITY CASCADE", commit=True)
                 st.cache_data.clear()
-                st.success("💥 Base de datos vaciada.")
                 st.rerun()
 
     st.divider()
     
-    # 2. FILTROS (SIMPLES PARA NO ROMPER)
-    f1, f2, f3 = st.columns([1, 1, 2])
+    # --- FILTROS PROFESIONALES UNIFORMES ---
+    f1, f2, f3 = st.columns(3)
     with f1:
-        f_stock = st.selectbox("Stock:", ["Todos", "Con Stock", "Sin Stock"])
+        f_tipo = st.selectbox("Filtrar por Tipo:", ["Todos", "Insumo", "Final", "Herramienta", "Packaging"])
     with f2:
-        f_tipo = st.multiselect("Tipo:", ["Insumo", "Final", "Herramienta", "Packaging"], default=["Insumo", "Final", "Herramienta", "Packaging"])
+        f_stock = st.selectbox("Filtrar por Stock:", ["Todos", "Con Stock", "Sin Stock"])
     with f3:
-        f_busq = st.text_input("🔍 Buscar por nombre:")
+        f_busq = st.text_input("🔍 Buscar por Nombre:")
 
-    # 3. CARGA DE DATOS SIN FORMATEO COMPLEJO (EVITA PANTALLA EN BLANCO)
+    # --- CONSULTA Y RENDERIZADO ---
     df_inv = db_query("""
         SELECT nombre as "Nombre", tipo as "Tipo", unidad as "Unidad", 
                stock_actual as "Stock Actual", costo_u as "Costo", 
@@ -141,25 +138,46 @@ if menu == "📦 Inventario y Alta":
     """)
     
     if df_inv is not None and not df_inv.empty:
-        # Filtrado lógico
-        df_inv = df_inv[df_inv['Tipo'].isin(f_tipo)]
-        if f_busq:
-            df_inv = df_inv[df_inv['Nombre'].str.contains(f_busq.upper(), na=False)]
+        # Aplicación de filtros
+        if f_tipo != "Todos":
+            df_inv = df_inv[df_inv['Tipo'] == f_tipo]
         
         if f_stock == "Con Stock":
             df_inv = df_inv[df_inv['Stock Actual'] > 0]
         elif f_stock == "Sin Stock":
             df_inv = df_inv[df_inv['Stock Actual'] <= 0]
+            
+        if f_busq:
+            df_inv = df_inv[df_inv['Nombre'].str.contains(f_busq.upper(), na=False)]
 
-        # Mostramos la tabla tal cual (sin colores que rompan el render)
-        st.dataframe(df_inv, hide_index=True, use_container_width=True)
+        # Lógica de Color Profesional (Status Indicator)
+        # Creamos una columna visual que Streamlit reconoce para mostrar colores
+        df_inv['Estado'] = df_inv['Stock Actual'].apply(lambda x: "🟢" if x > 0 else "🔴")
         
-        # Botón de backup
+        # Reordenar para que el estado esté al principio
+        cols = ['Estado'] + [c for c in df_inv.columns if c != 'Estado']
+        df_inv = df_inv[cols]
+
+        # Configuración de columnas (Decimales y Visualización)
+        st.dataframe(
+            df_inv,
+            hide_index=True,
+            width='stretch', # Reemplazo de use_container_width según log
+            column_config={
+                "Stock Actual": st.column_config.NumberColumn("Stock Actual", format="%.2f"),
+                "Costo": st.column_config.NumberColumn("Costo", format="$ %.2f"),
+                "P.V. Lista 1": st.column_config.NumberColumn("P.V. Lista 1", format="$ %.2f"),
+                "P.V. Lista 2": st.column_config.NumberColumn("P.V. Lista 2", format="$ %.2f"),
+                "Estado": st.column_config.TextColumn(" ", width="small")
+            }
+        )
+        
+        # Exportación
         towrite = io.BytesIO()
         df_inv.to_excel(towrite, index=False, engine='openpyxl')
-        st.download_button("📥 Descargar Excel", towrite.getvalue(), "inventario.xlsx")
+        st.download_button("📥 Exportar Inventario", towrite.getvalue(), "inventario_velas.xlsx")
     else:
-        st.warning("No se encontraron productos con los filtros seleccionados.")
+        st.info("Sin registros que coincidan con los filtros.")
 
         
 # ==========================================
