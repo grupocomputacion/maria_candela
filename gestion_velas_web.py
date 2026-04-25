@@ -597,48 +597,55 @@ elif menu == "💰 Flujo de Caja":
                 st.success("Deuda amortizada.")
                 st.rerun()
 
+
 # ==========================================
-# 📈 9. ANÁLISIS DE RESULTADOS
+# 📊 9. ANÁLISIS DE RESULTADOS (MODO ROBUSTO)
 # ==========================================
-elif menu == "💰 Flujo de Caja":
-    st.header("💰 Control de Flujo de Caja")
+elif menu == "📊 Análisis de Resultados":
+    st.header("📊 Análisis de Negocio y Valoración")
     
-    # Visualización de métricas
-    df_saldos = db_query("SELECT tipo_cuenta, saldo FROM saldos_caja")
-    if df_saldos is not None:
-        efectivo = df_saldos[df_saldos['tipo_cuenta'] == 'Efectivo']['saldo'].values[0]
-        banco = df_saldos[df_saldos['tipo_cuenta'] == 'Banco']['saldo'].values[0]
-        deuda_tc = df_saldos[df_saldos['tipo_cuenta'] == 'Deuda_TC']['saldo'].values[0]
+    try:
+        df_v = db_query("SELECT fecha, producto, cantidad, total_venta, costo_momento FROM historial_ventas")
         
-        c1, c2, c3 = st.columns(3)
-        c1.metric("💵 Efectivo", f"$ {efectivo:,.2f}")
-        c2.metric("🏦 Banco / MP", f"$ {banco:,.2f}")
-        c3.metric("💳 Deuda Insumos (TC)", f"$ {deuda_tc:,.2f}", delta="- Pendiente de Pago", delta_color="inverse")
-
-    st.divider()
-    col_mov, col_pago = st.columns(2)
-
-    with col_mov:
-        st.subheader("🔄 Transferencias")
-        with st.form("transf"):
-            t_mov = st.selectbox("Movimiento:", ["Efectivo a Banco", "Banco a Efectivo"])
-            m_mov = st.number_input("Monto:", min_value=0.0)
-            if st.form_submit_button("Ejecutar"):
-                if "Efectivo a Banco" in t_mov:
-                    db_query("UPDATE saldos_caja SET saldo = saldo - :m WHERE tipo_cuenta = 'Efectivo'", {"m": m_mov}, commit=True)
-                    db_query("UPDATE saldos_caja SET saldo = saldo + :m WHERE tipo_cuenta = 'Banco'", {"m": m_mov}, commit=True)
-                else:
-                    db_query("UPDATE saldos_caja SET saldo = saldo - :m WHERE tipo_cuenta = 'Banco'", {"m": m_mov}, commit=True)
-                    db_query("UPDATE saldos_caja SET saldo = saldo + :m WHERE tipo_cuenta = 'Efectivo'", {"m": m_mov}, commit=True)
-                st.rerun()
-
-    with col_pago:
-        st.subheader("💳 Pagar Tarjeta")
-        with st.form("pago_tc"):
-            desde = st.selectbox("Pagar desde:", ["Banco", "Efectivo"])
-            m_tc = st.number_input("Monto a pagar de TC:", min_value=0.0)
-            if st.form_submit_button("Liquidar Deuda"):
-                db_query(f"UPDATE saldos_caja SET saldo = saldo - :m WHERE tipo_cuenta = '{desde}'", {"m": m_tc}, commit=True)
-                db_query("UPDATE saldos_caja SET saldo = saldo - :m WHERE tipo_cuenta = 'Deuda_TC'", {"m": m_tc}, commit=True)
-                st.success("Deuda amortizada.")
-                st.rerun()  
+        if df_v is not None and not df_v.empty:
+            # 1. Limpieza de datos (Evita el "Blanco")
+            df_v['fecha'] = pd.to_datetime(df_v['fecha'], errors='coerce')
+            df_v = df_v.dropna(subset=['fecha'])
+            df_v['costo_momento'] = df_v['costo_momento'].fillna(0).astype(float)
+            df_v['total_venta'] = df_v['total_venta'].fillna(0).astype(float)
+            
+            df_v['Costo Total'] = df_v['cantidad'] * df_v['costo_momento']
+            df_v['Ganancia'] = df_v['total_venta'] - df_v['Costo Total']
+            
+            # Agrupación por Mes
+            df_v['Mes'] = df_v['fecha'].dt.strftime('%Y-%m')
+            resumen = df_v.groupby('Mes').agg({
+                'total_venta': 'sum',
+                'Costo Total': 'sum',
+                'Ganancia': 'sum'
+            }).rename(columns={'total_venta': 'Ventas Totales'})
+            
+            st.subheader("📈 Rentabilidad Mensual")
+            st.dataframe(resumen.style.format("$ {:,.2f}"), use_container_width=True)
+            
+            # --- VALORACIÓN DE STOCK ---
+            st.divider()
+            st.subheader("📦 Valoración de Stock Actual")
+            df_stk = db_query("SELECT nombre, stock_actual, costo_u, precio_v, precio_v2 FROM productos WHERE stock_actual > 0 AND UPPER(tipo) = 'FINAL'")
+            
+            if df_stk is not None and not df_stk.empty:
+                df_stk['Val. Costo'] = df_stk['stock_actual'] * df_stk['costo_u']
+                df_stk['Val. L1'] = df_stk['stock_actual'] * df_stk['precio_v']
+                df_stk['Val. L2'] = df_stk['stock_actual'] * df_stk['precio_v2']
+                
+                c1, c2, c3 = st.columns(3)
+                c1.metric("📉 Capital Inmovilizado", f"$ {df_stk['Val. Costo'].sum():,.2f}")
+                c2.metric("💰 Forecast L1", f"$ {df_stk['Val. L1'].sum():,.2f}")
+                c3.metric("💰 Forecast L2", f"$ {df_stk['Val. L2'].sum():,.2f}")
+                
+                st.dataframe(df_stk[['nombre', 'stock_actual', 'Val. Costo', 'Val. L1', 'Val. L2']], hide_index=True)
+        else:
+            st.warning("⚠️ No se encontraron ventas para analizar. Verificá la tabla 'historial_ventas' en Supabase.")
+            
+    except Exception as e:
+        st.error(f"❌ Error al procesar el análisis: {e}")
