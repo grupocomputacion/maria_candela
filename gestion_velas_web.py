@@ -65,7 +65,7 @@ menu = st.sidebar.radio("Ir a:", [
 ])
 
 # ==========================================
-# 📦 1. INVENTARIO Y ALTA (CORRECCIÓN NAMEERROR)
+# 📦 1. INVENTARIO Y ALTA (VERSIÓN FINAL CONSOLIDADA)
 # ==========================================
 if menu == "📦 Inventario y Alta":
     st.subheader("📦 Gestión de Inventario Profesional")
@@ -75,7 +75,6 @@ if menu == "📦 Inventario y Alta":
         st.rerun()
 
     # --- DEFINICIÓN CRÍTICA DE COLUMNAS ---
-    # Aseguramos que col_alta y col_imp existan en este scope
     col_alta, col_imp = st.columns(2)
 
     with col_alta.expander("➕ DAR DE ALTA MANUAL"):
@@ -94,7 +93,6 @@ if menu == "📦 Inventario y Alta":
                     st.success(f"✅ {n} registrado.")
                     st.rerun()
 
-    # --- AQUÍ USAMOS COL_IMP QUE YA FUE DEFINIDA ARRIBA ---
     with col_imp.expander("🚀 GESTIÓN DE DATOS (Restauración / Limpieza)"):
         uploaded_file = st.file_uploader("Subir backup.xlsx", type=["xlsx"])
         if uploaded_file:
@@ -123,32 +121,26 @@ if menu == "📦 Inventario y Alta":
                                       "p1": safe_float(row.get('precio_v', 0)),
                                       "p2": safe_float(row.get('precio_v2', 0))}, commit=True)
 
-                        # Creamos mapa de IDs reales de Supabase (Nombre -> ID Nuevo)
+                        # Mapeos para consistencia
                         prods_db = db_query("SELECT id, nombre FROM productos")
                         mapa_id_real = dict(zip(prods_db['nombre'], prods_db['id']))
-                        
-                        # Creamos mapa del Excel (ID Viejo -> Nombre) para traducir tu pestaña de recetas
                         mapa_nombres_excel = dict(zip(df_p['id'], df_p['nombre'].str.strip().str.upper()))
 
-                        # 3. CARGA DE RECETAS (Mapeo ID Viejo -> Nombre -> ID Nuevo)
+                        # 3. CARGA DE RECETAS (Usando id_final e id_insumo del Excel)
                         if 'recetas' in xls.sheet_names:
                             status.write("🧪 Vinculando Recetas por ID...")
                             df_r = pd.read_excel(xls, 'recetas')
                             df_r.columns = [str(col).strip().lower() for col in df_r.columns]
                             for _, row in df_r.iterrows():
-                                # Obtenemos nombres desde el ID del excel
                                 nombre_f = mapa_nombres_excel.get(row.get('id_final'))
                                 nombre_i = mapa_nombres_excel.get(row.get('id_insumo'))
-                                
-                                # Buscamos el ID real en Supabase por esos nombres
                                 id_f_real = mapa_id_real.get(nombre_f)
                                 id_i_real = mapa_id_real.get(nombre_i)
-                                
                                 if id_f_real and id_i_real:
                                     db_query("INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (:idf, :idi, :c)",
                                              {"idf": id_f_real, "idi": id_i_real, "c": safe_float(row.get('cantidad', 0))}, commit=True)
 
-                        # 4. CARGA DE HISTORIAL DE COMPRAS (Nueva sección)
+                        # 4. CARGA DE HISTORIAL DE COMPRAS
                         if 'historial_compras' in xls.sheet_names:
                             status.write("🛍️ Importando Historial de Compras...")
                             df_c = pd.read_excel(xls, 'historial_compras')
@@ -175,35 +167,18 @@ if menu == "📦 Inventario y Alta":
                                           "cm": safe_float(row.get('costo_momento', row.get('costo_tot', 0)))}, commit=True)
 
                         # 6. SINCRONIZACIÓN FINAL DE CAJA
-                        status.write("💰 Sincronizando Caja (Ingresos - Egresos)...")
+                        status.write("💰 Sincronizando Caja...")
                         db_query("INSERT INTO saldos_caja (tipo_cuenta, saldo) VALUES ('Efectivo', 0), ('Banco', 0), ('Deuda_TC', 0) ON CONFLICT DO NOTHING", commit=True)
-                        
-                        # Resetear saldos antes de recalcular
                         db_query("UPDATE saldos_caja SET saldo = 0", commit=True)
-                        
-                        # Sumar Ventas e Historial de Compras por método
                         db_query("""
-                            -- Efectivo: Ventas - Compras
-                            UPDATE saldos_caja SET saldo = (
-                                (SELECT COALESCE(SUM(total_venta), 0) FROM historial_ventas WHERE LOWER(metodo_pago) LIKE '%efectivo%') -
-                                (SELECT COALESCE(SUM(total), 0) FROM historial_compras WHERE LOWER(metodo_pago) LIKE '%efectivo%')
-                            ) WHERE tipo_cuenta = 'Efectivo';
-                            
-                            -- Banco: Ventas - Compras
-                            UPDATE saldos_caja SET saldo = (
-                                (SELECT COALESCE(SUM(total_venta), 0) FROM historial_ventas WHERE LOWER(metodo_pago) NOT LIKE '%efectivo%' AND LOWER(metodo_pago) NOT LIKE '%tarjeta%') -
-                                (SELECT COALESCE(SUM(total), 0) FROM historial_compras WHERE LOWER(metodo_pago) NOT LIKE '%efectivo%' AND LOWER(metodo_pago) NOT LIKE '%tarjeta%')
-                            ) WHERE tipo_cuenta = 'Banco';
-                            
-                            -- Deuda TC: Solo Compras con Tarjeta
-                            UPDATE saldos_caja SET saldo = (SELECT COALESCE(SUM(total), 0) FROM historial_compras WHERE LOWER(metodo_pago) LIKE '%tarjeta%') 
-                            WHERE tipo_cuenta = 'Deuda_TC';
+                            UPDATE saldos_caja SET saldo = ((SELECT COALESCE(SUM(total_venta), 0) FROM historial_ventas WHERE LOWER(metodo_pago) LIKE '%efectivo%') - (SELECT COALESCE(SUM(total), 0) FROM historial_compras WHERE LOWER(metodo_pago) LIKE '%efectivo%')) WHERE tipo_cuenta = 'Efectivo';
+                            UPDATE saldos_caja SET saldo = ((SELECT COALESCE(SUM(total_venta), 0) FROM historial_ventas WHERE LOWER(metodo_pago) NOT LIKE '%efectivo%' AND LOWER(metodo_pago) NOT LIKE '%tarjeta%') - (SELECT COALESCE(SUM(total), 0) FROM historial_compras WHERE LOWER(metodo_pago) NOT LIKE '%efectivo%' AND LOWER(metodo_pago) NOT LIKE '%tarjeta%')) WHERE tipo_cuenta = 'Banco';
+                            UPDATE saldos_caja SET saldo = (SELECT COALESCE(SUM(total), 0) FROM historial_compras WHERE LOWER(metodo_pago) LIKE '%tarjeta%') WHERE tipo_cuenta = 'Deuda_TC';
                         """, commit=True)
 
                         status.update(label="✨ ¡Restauración Maestra Exitosa!", state="complete", expanded=False)
                         st.cache_data.clear()
                         st.rerun()
-
                     except Exception as e:
                         status.update(label="❌ Error crítico", state="error")
                         st.error(f"Fallo en: {str(e)}")
@@ -212,14 +187,14 @@ if menu == "📦 Inventario y Alta":
         clave_b = st.text_input("Clave de Seguridad:", type="password")
         if st.button("🗑️ LIMPIAR TODAS LAS TABLAS"):
             if clave_b == "3280":
-                db_query("TRUNCATE TABLE recetas, historial_ventas, productos, saldos_caja RESTART IDENTITY CASCADE", commit=True)
+                db_query("TRUNCATE TABLE recetas, historial_ventas, historial_compras, productos, saldos_caja RESTART IDENTITY CASCADE", commit=True)
                 db_query("INSERT INTO saldos_caja (tipo_cuenta, saldo) VALUES ('Efectivo', 0), ('Banco', 0), ('Deuda_TC', 0)", commit=True)
                 st.cache_data.clear()
                 st.rerun()
 
     st.divider()
     
-    # --- FILTROS PROFESIONALES UNIFORMES ---
+    # --- FILTROS ---
     f1, f2, f3 = st.columns(3)
     with f1:
         f_tipo = st.selectbox("Filtrar por Tipo:", ["Todos", "insumo", "final", "herramienta", "packaging"])
@@ -228,50 +203,18 @@ if menu == "📦 Inventario y Alta":
     with f3:
         f_busq = st.text_input("🔍 Buscar por Nombre:")
 
-    # --- CONSULTA Y RENDERIZADO ---
+    # --- CONSULTA Y TABLA EDITABLE ---
     df_inv = db_query("""
-        SELECT nombre as "Nombre", tipo as "Tipo", unidad as "Unidad", 
-               stock_actual as "Stock Actual", costo_u as "Costo", 
+        SELECT id, nombre as "Descripción", tipo as "Tipo", unidad as "Unidad", 
+               stock_actual as "Stock", costo_u as "Costo", 
                precio_v as "P.V. Lista 1", precio_v2 as "P.V. Lista 2" 
-        FROM productos WHERE nombre IS NOT NULL
+        FROM productos ORDER BY nombre ASC
     """)
     
     if df_inv is not None and not df_inv.empty:
-        # Aplicación de filtros
-        if f_tipo != "Todos":
-            df_inv = df_inv[df_inv['Tipo'] == f_tipo]
-        
-        if f_stock == "Con Stock":
-            df_inv = df_inv[df_inv['Stock Actual'] > 0]
-        elif f_stock == "Sin Stock":
-            df_inv = df_inv[df_inv['Stock Actual'] <= 0]
-            
-        if f_busq:
-            df_inv = df_inv[df_inv['Nombre'].str.contains(f_busq.upper(), na=False)]
-
-        # Lógica de Color Profesional
-        df_inv['Estado'] = df_inv['Stock Actual'].apply(lambda x: "🟢" if x > 0 else "🔴")
-        cols = ['Estado'] + [c for c in df_inv.columns if c != 'Estado']
-        df_inv = df_inv[cols]
-
-        st.dataframe(
-            df_inv,
-            hide_index=True,
-            width='stretch',
-            column_config={
-                "Stock Actual": st.column_config.NumberColumn("Stock Actual", format="%.2f"),
-                "Costo": st.column_config.NumberColumn("Costo", format="$ %.2f"),
-                "P.V. Lista 1": st.column_config.NumberColumn("P.V. Lista 1", format="$ %.2f"),
-                "P.V. Lista 2": st.column_config.NumberColumn("P.V. Lista 2", format="$ %.2f"),
-                "Estado": st.column_config.TextColumn(" ", width="small")
-            }
-        )
-        
-        towrite = io.BytesIO()
-        df_inv.to_excel(towrite, index=False, engine='openpyxl')
-        st.download_button("📥 Exportar Inventario", towrite.getvalue(), "inventario_velas.xlsx")
-    else:
-        st.info("Sin registros que coincidan con los filtros.")
+        if f_tipo != "Todos": df_inv = df_inv[df_inv['Tipo'] == f_tipo]
+        if f_stock == "Con Stock": df_inv = df_inv[df_inv['Stock'] > 0]
+        elif f_stock == "Sin Stock": df_inv = df_inv[df_inv['Stock'] <= 0
 
 # ==========================================
 # 🧪 2. RECETAS Y COSTEO (VERSIÓN DEFINITIVA)
