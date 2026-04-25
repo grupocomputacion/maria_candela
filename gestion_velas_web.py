@@ -181,20 +181,22 @@ if menu == "📦 Inventario y Alta":
 
         
 # ==========================================
-# 🧪 2. RECETAS Y COSTEO
+# 🧪 2. RECETAS Y COSTEO (OPTIMIZADO)
 # ==========================================
 elif menu == "🧪 Recetas y Costeo":
     st.header("🧪 Composición y Costeo")
 
-    df_f = db_query("SELECT id, nombre FROM productos WHERE UPPER(tipo) = 'FINAL' ORDER BY nombre")
+    # Traemos productos finales con sus precios actuales para tenerlos de referencia
+    df_f = db_query("SELECT id, nombre, precio_v, precio_v2, costo_u FROM productos WHERE UPPER(tipo) = 'FINAL' ORDER BY nombre")
     df_i = db_query("SELECT id, nombre, unidad, costo_u FROM productos WHERE UPPER(tipo) = 'INSUMO' ORDER BY nombre")
 
     if df_f is None or df_f.empty:
         st.warning("No hay productos finales. Dá de alta uno primero en 'Inventario y Alta'.")
         st.stop()
 
-    sel_f = st.selectbox("Producto Final:", df_f['nombre'].tolist())
-    id_f  = int(df_f[df_f['nombre'] == sel_f].iloc[0]['id'])
+    sel_f = st.selectbox("Producto Final a costear:", df_f['nombre'].tolist())
+    row_actual = df_f[df_f['nombre'] == sel_f].iloc[0]
+    id_f = int(row_actual['id'])
 
     c1, c2 = st.columns([1, 2])
 
@@ -204,9 +206,8 @@ elif menu == "🧪 Recetas y Costeo":
             with st.form("receta"):
                 sel_i = st.selectbox("Insumo:", df_i['nombre'].tolist())
                 row_i = df_i[df_i['nombre'] == sel_i].iloc[0]
-                cant  = st.number_input(f"Cantidad ({row_i['unidad']})", min_value=0.001, format="%.3f")
-                if st.form_submit_button("➕ Añadir"):
-                    # Actualizar si ya existe, insertar si no
+                cant = st.number_input(f"Cantidad ({row_i['unidad']})", min_value=0.001, format="%.3f")
+                if st.form_submit_button("➕ Añadir a Receta"):
                     db_query(
                         """INSERT INTO recetas (id_final, id_insumo, cantidad)
                            VALUES (:idf, :idi, :c)
@@ -214,12 +215,13 @@ elif menu == "🧪 Recetas y Costeo":
                         {"idf": id_f, "idi": int(row_i['id']), "c": cant},
                         commit=True
                     )
+                    st.cache_data.clear()
                     st.rerun()
         else:
             st.info("Sin insumos cargados.")
 
     with c2:
-        st.subheader("Receta actual")
+        st.subheader("Estructura de Costos")
         df_rec = db_query(
             """SELECT r.id as receta_id, i.nombre, r.cantidad, i.unidad,
                       i.costo_u, (r.cantidad * i.costo_u) as subtotal
@@ -229,39 +231,63 @@ elif menu == "🧪 Recetas y Costeo":
                ORDER BY i.nombre""",
             {"id": id_f}
         )
+        
+        costo_receta = 0.0
         if df_rec is not None and not df_rec.empty:
-            costo_total = df_rec['subtotal'].sum()
-            st.metric("💰 Costo Total de Receta", f"$ {costo_total:,.2f}")
+            costo_receta = df_rec['subtotal'].sum()
+            st.metric("💰 Costo Total Calculado", f"$ {costo_receta:,.2f}")
 
-            # Mostrar receta con botón eliminar por fila
+            # Lista de insumos
             for _, r in df_rec.iterrows():
-                col_n, col_c, col_s, col_btn = st.columns([3, 1, 1, 1])
-                col_n.write(f"**{r['nombre']}**")
+                col_n, col_c, col_s, col_btn = st.columns([3, 1, 1, 0.5])
+                col_n.write(f"{r['nombre']}")
                 col_c.write(f"{r['cantidad']} {r['unidad']}")
                 col_s.write(f"$ {r['subtotal']:,.2f}")
                 if col_btn.button("🗑️", key=f"del_rec_{r['receta_id']}"):
                     db_query("DELETE FROM recetas WHERE id = :id", {"id": int(r['receta_id'])}, commit=True)
+                    st.cache_data.clear()
                     st.rerun()
 
-            # Actualizar precio de venta sugerido
             st.divider()
-            st.caption("💡 Actualizá precios de venta basado en el costo calculado")
-            with st.form("actualizar_precio"):
-                margen_l1 = st.number_input("Margen L1 Minorista (%)", min_value=0.0, value=100.0)
-                margen_l2 = st.number_input("Margen L2 Mayorista (%)", min_value=0.0, value=60.0)
-                p1_sug = costo_total * (1 + margen_l1 / 100)
-                p2_sug = costo_total * (1 + margen_l2 / 100)
-                st.write(f"Precio L1 sugerido: **$ {p1_sug:,.2f}** | Precio L2 sugerido: **$ {p2_sug:,.2f}**")
-                if st.form_submit_button("💾 Aplicar precios y costo a producto"):
-                    db_query(
-                        "UPDATE productos SET costo_u = :c, precio_v = :p1, precio_v2 = :p2 WHERE id = :id",
-                        {"c": costo_total, "p1": p1_sug, "p2": p2_sug, "id": id_f},
+            st.subheader("📈 Definición de Precios y Margen")
+            
+            # Formulario de precios dinámico
+            with st.form("actualizar_precios_pro"):
+                col_p1, col_p2 = st.columns(2)
+                
+                # Levantamos lo que ya existe en la base de datos
+                p1_actual = float(row_actual['precio_v']) if row_actual['precio_v'] else 0.0
+                p2_actual = float(row_actual['precio_v2']) if row_actual['precio_v2'] else 0.0
+                
+                with col_p1:
+                    st.markdown("**Lista 1 (Minorista)**")
+                    p1_nuevo = st.number_input("Precio Venta L1 ($)", value=p1_actual, step=100.0)
+                    if p1_nuevo > 0 and costo_receta > 0:
+                        margen1 = ((p1_nuevo / costo_receta) - 1) * 100
+                        st.caption(f"Margen actual: {margen1:.1f}%")
+                
+                with col_p2:
+                    st.markdown("**Lista 2 (Mayorista)**")
+                    p2_nuevo = st.number_input("Precio Venta L2 ($)", value=p2_actual, step=100.0)
+                    if p2_nuevo > 0 and costo_receta > 0:
+                        margen2 = ((p2_nuevo / costo_receta) - 1) * 100
+                        st.caption(f"Margen actual: {margen2:.1f}%")
+
+                if st.form_submit_button("💾 APLICAR COSTO Y PRECIOS AL INVENTARIO"):
+                    # Actualizamos el producto final con el costo de la receta y los nuevos precios
+                    success = db_query(
+                        """UPDATE productos 
+                           SET costo_u = :c, precio_v = :p1, precio_v2 = :p2 
+                           WHERE id = :id""",
+                        {"c": costo_receta, "p1": p1_nuevo, "p2": p2_nuevo, "id": id_f},
                         commit=True
                     )
-                    st.success("✅ Precios actualizados.")
-                    st.rerun()
+                    if success:
+                        st.cache_data.clear()
+                        st.success(f"✅ Precios y Costo ($ {costo_receta:,.2f}) actualizados en Inventario.")
+                        st.rerun()
         else:
-            st.info("Esta receta no tiene insumos aún.")
+            st.info("Esta receta no tiene insumos. El costo actual es $ 0.00")
 
 # ==========================================
 # 🏭 3. FABRICACIÓN
