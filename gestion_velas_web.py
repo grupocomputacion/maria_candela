@@ -65,101 +65,105 @@ menu = st.sidebar.radio("Ir a:", [
 ])
 
 # ==========================================
-# 📦 1. INVENTARIO Y ALTA (VERSIÓN CON MONITOREO)
+# 📦 1. INVENTARIO Y ALTA (CORRECCIÓN NAMEERROR)
 # ==========================================
 if menu == "📦 Inventario y Alta":
     st.subheader("📦 Gestión de Inventario Profesional")
     
-    # ... (Mantenemos el resto igual) ...
+    if st.sidebar.button("🔄 Sincronizar Base de Datos"):
+        st.cache_data.clear()
+        st.rerun()
 
+    # --- DEFINICIÓN CRÍTICA DE COLUMNAS ---
+    # Aseguramos que col_alta y col_imp existan en este scope
+    col_alta, col_imp = st.columns(2)
+
+    with col_alta.expander("➕ DAR DE ALTA MANUAL"):
+        with st.form("alta"):
+            ca, cb = st.columns(2)
+            n = ca.text_input("Nombre")
+            t = cb.selectbox("Tipo", ["insumo", "final", "herramienta", "packaging"])
+            u = ca.selectbox("Unidad", ["Gr", "Ml", "Un", "Kg"])
+            s = cb.number_input("Stock Inicial", min_value=0.0)
+            c = ca.number_input("Costo Unitario ($)", min_value=0.0)
+            if st.form_submit_button("💾 Guardar"):
+                if n.strip():
+                    db_query("INSERT INTO productos (nombre, tipo, unidad, stock_actual, costo_u) VALUES (:n, :t, :u, :s, :c)",
+                             {"n": n.strip().upper(), "t": t, "u": u, "s": s, "c": c}, commit=True)
+                    st.cache_data.clear()
+                    st.success(f"✅ {n} registrado.")
+                    st.rerun()
+
+    # --- AQUÍ USAMOS COL_IMP QUE YA FUE DEFINIDA ARRIBA ---
     with col_imp.expander("🚀 GESTIÓN DE DATOS (Restauración / Limpieza)"):
         uploaded_file = st.file_uploader("Subir backup.xlsx", type=["xlsx"])
         if uploaded_file:
             if st.button("🏁 EJECUTAR RESTAURACIÓN"):
-                # Iniciamos un contenedor de estado para monitoreo
-                with st.status("🚀 Iniciando proceso de restauración...", expanded=True) as status:
+                with st.status("🚀 Procesando Restauración...", expanded=True) as status:
                     try:
                         xls = pd.ExcelFile(uploaded_file)
                         
-                        # 1. LIMPIEZA
-                        status.write("🧹 Limpiando base de datos actual...")
+                        status.write("🧹 Limpiando tablas...")
                         db_query("TRUNCATE TABLE recetas, historial_ventas, saldos_caja RESTART IDENTITY CASCADE", commit=True)
                         db_query("TRUNCATE TABLE productos RESTART IDENTITY CASCADE", commit=True)
 
-                        # 2. PRODUCTOS
                         if 'productos' in xls.sheet_names:
                             status.write("📥 Cargando Productos...")
                             df_p = pd.read_excel(xls, 'productos')
-                            df_p.columns = [str(c).strip().lower() for c in df_p.columns]
-                            for i, row in df_p.iterrows():
+                            df_p.columns = [str(col).strip().lower() for col in df_p.columns]
+                            for _, row in df_p.iterrows():
                                 db_query("""INSERT INTO productos (nombre, tipo, unidad, stock_actual, costo_u, precio_v, precio_v2) 
                                          VALUES (:n, :t, :u, :s, :c, :p1, :p2)""",
                                          {"n": str(row.get('nombre', '')).strip().upper(), 
-                                          "t": str(row.get('tipo', 'Insumo')).lower(),
+                                          "t": str(row.get('tipo', 'insumo')).lower(),
                                           "u": str(row.get('unidad', 'Un')), 
                                           "s": safe_float(row.get('stock_actual', 0)),
                                           "c": safe_float(row.get('costo_u', 0)), 
                                           "p1": safe_float(row.get('precio_v', 0)),
                                           "p2": safe_float(row.get('precio_v2', 0))}, commit=True)
-                            status.write(f"✅ {len(df_p)} productos cargados.")
 
-                        # MAPEO DE IDs (Crucial para recetas y ventas)
+                        # Mapeo de IDs para consistencia
                         prods_db = db_query("SELECT id, nombre FROM productos")
                         mapa_id = dict(zip(prods_db['nombre'], prods_db['id']))
 
-                        # 3. RECETAS (Mapeo por nombre)
                         if 'recetas' in xls.sheet_names:
                             status.write("🧪 Vinculando Recetas...")
                             df_r = pd.read_excel(xls, 'recetas')
-                            df_r.columns = [str(c).strip().lower() for c in df_r.columns]
+                            df_r.columns = [str(col).strip().lower() for col in df_r.columns]
                             for _, row in df_r.iterrows():
-                                # Buscamos columnas alternativas si fallan los nombres
-                                id_f = mapa_id.get(str(row.get('nombre_final', row.get('producto_final', ''))).strip().upper())
-                                id_i = mapa_id.get(str(row.get('nombre_insumo', row.get('insumo', ''))).strip().upper())
+                                id_f = mapa_id.get(str(row.get('nombre_final', row.get('id_final', ''))).strip().upper())
+                                id_i = mapa_id.get(str(row.get('nombre_insumo', row.get('id_insumo', ''))).strip().upper())
                                 if id_f and id_i:
                                     db_query("INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (:idf, :idi, :c)",
                                              {"idf": id_f, "idi": id_i, "c": safe_float(row.get('cantidad', 0))}, commit=True)
-                            status.write("✅ Recetas vinculadas correctamente.")
 
-                        # 4. VENTAS (Ajustado a tus columnas del Excel: total_ven, costo_tot)
                         if 'historial_ventas' in xls.sheet_names:
-                            status.write("📈 Importando Historial de Ventas...")
+                            status.write("📈 Importando Ventas...")
                             df_v = pd.read_excel(xls, 'historial_ventas')
-                            df_v.columns = [str(c).strip().lower() for c in df_v.columns]
+                            df_v.columns = [str(col).strip().lower() for col in df_v.columns]
                             for _, row in df_v.iterrows():
                                 prod_n = str(row.get('producto', '')).strip().upper()
-                                # TRADUCTOR DE COLUMNAS (tu excel dice total_ven y costo_tot)
-                                t_venta = safe_float(row.get('total_venta', row.get('total_ven', 0)))
-                                c_momento = safe_float(row.get('costo_momento', row.get('costo_tot', 0)))
-                                
                                 db_query("""INSERT INTO historial_ventas (fecha, producto, cantidad, total_venta, metodo_pago, costo_momento)
                                          VALUES (:f, :p, :c, :t, :m, :cm)""",
-                                         {"f": row.get('fecha'), "p": prod_n, 
-                                          "c": safe_float(row.get('cantidad', 1)),
-                                          "t": t_venta, "m": str(row.get('metodo_pago', 'Efectivo')),
-                                          "cm": c_momento}, commit=True)
-                            status.write(f"✅ {len(df_v)} ventas registradas.")
+                                         {"f": row.get('fecha'), "p": prod_n, "c": safe_float(row.get('cantidad', 1)),
+                                          "t": safe_float(row.get('total_venta', row.get('total_ven', 0))),
+                                          "m": str(row.get('metodo_pago', 'Efectivo')),
+                                          "cm": safe_float(row.get('costo_momento', row.get('costo_tot', 0)))}, commit=True)
 
-                        # 5. SINCRONIZAR CAJA
-                        status.write("💰 Sincronizando saldos de caja...")
+                        status.write("💰 Sincronizando Caja...")
                         db_query("INSERT INTO saldos_caja (tipo_cuenta, saldo) VALUES ('Efectivo', 0), ('Banco', 0), ('Deuda_TC', 0) ON CONFLICT DO NOTHING", commit=True)
                         db_query("""
                             UPDATE saldos_caja SET saldo = (SELECT COALESCE(SUM(total_venta), 0) FROM historial_ventas WHERE LOWER(metodo_pago) LIKE '%efectivo%') WHERE tipo_cuenta = 'Efectivo';
                             UPDATE saldos_caja SET saldo = (SELECT COALESCE(SUM(total_venta), 0) FROM historial_ventas WHERE LOWER(metodo_pago) NOT LIKE '%efectivo%' AND LOWER(metodo_pago) NOT LIKE '%tarjeta%') WHERE tipo_cuenta = 'Banco';
                         """, commit=True)
-                        
-                        status.update(label="✨ ¡Restauración Maestra Completada!", state="complete", expanded=False)
-                        st.success("Saldos y Stock actualizados correctamente.")
+
+                        status.update(label="✨ Restauración Exitosa", state="complete", expanded=False)
                         st.cache_data.clear()
                         st.rerun()
 
                     except Exception as e:
-                        status.update(label="❌ Error detectado", state="error")
-                        st.error(f"Fallo técnico: {str(e)}")
-                        # Debug para vos: mostramos las columnas que leyó
-                        if 'df_v' in locals():
-                            st.write("Columnas detectadas en Ventas:", df_v.columns.tolist())
-
+                        status.update(label="❌ Falló la carga", state="error")
+                        st.error(f"Error detallado: {str(e)}")
 
 
         st.divider()
