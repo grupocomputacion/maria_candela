@@ -63,11 +63,16 @@ menu = st.sidebar.radio("Ir a:", [
 ])
 
 # ==========================================
-# 📦 1. INVENTARIO Y ALTA (UI PROFESIONAL)
+# 📦 1. INVENTARIO Y ALTA (VERSIÓN ESTABLE Y PROTEGIDA)
 # ==========================================
 if menu == "📦 Inventario y Alta":
     st.subheader("📦 Gestión de Inventario y Control Maestro")
     
+    # Botón de emergencia lateral para despertar la conexión
+    if st.sidebar.button("🔄 Forzar Sincronización"):
+        st.cache_data.clear()
+        st.rerun()
+
     col_alta, col_imp = st.columns(2)
 
     with col_alta.expander("➕ DAR DE ALTA MANUAL"):
@@ -87,11 +92,10 @@ if menu == "📦 Inventario y Alta":
                     st.rerun()
 
     with col_imp.expander("🚀 GESTIÓN DE DATOS (Restauración / Limpieza)"):
-        # Motor de Restauración Automática
-        uploaded_file = st.file_uploader("Subir backup.xlsx", type=["xlsx"], key="restore_maestro")
+        uploaded_file = st.file_uploader("Subir backup.xlsx", type=["xlsx"])
         if uploaded_file:
             xls = pd.ExcelFile(uploaded_file)
-            if st.button("🏁 INICIAR MIGRACIÓN COMPLETA"):
+            if st.button("🏁 INICIAR MIGRACIÓN"):
                 for sheet in xls.sheet_names:
                     df_ex = pd.read_excel(uploaded_file, sheet_name=sheet)
                     df_ex.columns = [str(c).strip().lower() for c in df_ex.columns]
@@ -112,9 +116,7 @@ if menu == "📦 Inventario y Alta":
                 st.rerun()
 
         st.divider()
-        # Botón de limpieza con clave 3280
-        st.warning("⚠️ Borrado de Tablas")
-        clave_b = st.text_input("Clave para resetear sistema:", type="password")
+        clave_b = st.text_input("Clave para resetear sistema (3280):", type="password")
         if st.button("🗑️ LIMPIAR TODO"):
             if clave_b == "3280":
                 db_query("TRUNCATE TABLE recetas, historial_ventas, productos RESTART IDENTITY CASCADE", commit=True)
@@ -124,7 +126,7 @@ if menu == "📦 Inventario y Alta":
 
     st.divider()
     
-    # --- FILTROS Y BÚSQUEDA COMPACTOS ---
+    # --- FILTROS Y BÚSQUEDA ---
     f1, f2, f3 = st.columns([1, 1, 2])
     with f1:
         filtro_stock = st.selectbox("Stock:", ["Todos", "Con Stock", "Sin Stock"])
@@ -133,7 +135,7 @@ if menu == "📦 Inventario y Alta":
     with f3:
         busqueda = st.text_input("🔍 Buscar por nombre:")
 
-    # Traer datos con nombres de columna corregidos desde SQL para facilitar
+    # Traer datos con nombres limpios
     df_inv = db_query("""
         SELECT id, nombre as "Nombre", tipo as "Tipo", unidad as "Unidad", 
                stock_actual as "Stock Actual", costo_u as "Costo", 
@@ -142,7 +144,7 @@ if menu == "📦 Inventario y Alta":
     """)
     
     if df_inv is not None and not df_inv.empty:
-        # Aplicar Filtros
+        # 1. Aplicar Filtros
         df_inv = df_inv[df_inv['Tipo'].isin(filtro_tipo)]
         if busqueda:
             df_inv = df_inv[df_inv['Nombre'].str.contains(busqueda.upper(), case=False, na=False)]
@@ -152,22 +154,29 @@ if menu == "📦 Inventario y Alta":
         elif filtro_stock == "Sin Stock":
             df_inv = df_inv[df_inv['Stock Actual'] <= 0]
 
-        # Estilo de color: Verde si hay stock, Rojo si no
-        def style_rows(row):
-            color = 'color: #28a745;' if row['Stock Actual'] > 0 else 'color: #dc3545;'
-            return [color] * len(row)
+        # 2. Formateo y Estilo Seguro
+        try:
+            def style_rows(row):
+                color = 'color: #28a745;' if row['Stock Actual'] > 0 else 'color: #dc3545;'
+                return [color] * len(row)
 
-        styled_df = df_inv.style.format({
-            "Stock Actual": "{:.2f}", "Costo": "$ {:.2f}", 
-            "P.V. Lista 1": "$ {:.2f}", "P.V. Lista 2": "$ {:.2f}"
-        }).apply(style_rows, axis=1)
-
-        st.dataframe(styled_df, hide_index=True, width='stretch')
+            styled_df = df_inv.style.format({
+                "Stock Actual": "{:.2f}", "Costo": "$ {:.2f}", 
+                "P.V. Lista 1": "$ {:.2f}", "P.V. Lista 2": "$ {:.2f}"
+            }).apply(style_rows, axis=1)
+            
+            st.dataframe(styled_df, hide_index=True, width='stretch')
+        except Exception as e:
+            # Si el estilo falla, mostramos el dataframe crudo para no perder visibilidad
+            st.error(f"Error visual: {e}")
+            st.dataframe(df_inv, hide_index=True, width='stretch')
         
-        # Backup rápido
+        # Backup
         towrite = io.BytesIO()
         df_inv.to_excel(towrite, index=False, engine='openpyxl')
         st.download_button("📥 Generar Backup Excel", towrite.getvalue(), f"backup_{date.today()}.xlsx")
+    else:
+        st.info("No hay datos para mostrar con los filtros seleccionados.")
 
         
 # ==========================================
