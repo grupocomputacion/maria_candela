@@ -99,46 +99,70 @@ if menu == "📦 Inventario y Alta":
         uploaded_file = st.file_uploader("Subir backup.xlsx", type=["xlsx"])
         if uploaded_file:
             if st.button("🏁 EJECUTAR RESTAURACIÓN"):
-                with st.status("🚀 Procesando Restauración...", expanded=True) as status:
+                with st.status("🚀 Procesando Restauración Maestra...", expanded=True) as status:
                     try:
                         xls = pd.ExcelFile(uploaded_file)
                         
-                        status.write("🧹 Limpiando tablas...")
-                        db_query("TRUNCATE TABLE recetas, historial_ventas, saldos_caja RESTART IDENTITY CASCADE", commit=True)
+                        # 1. LIMPIEZA TOTAL
+                        status.write("🧹 Limpiando tablas para carga limpia...")
+                        db_query("TRUNCATE TABLE recetas, historial_ventas, historial_compras, saldos_caja RESTART IDENTITY CASCADE", commit=True)
                         db_query("TRUNCATE TABLE productos RESTART IDENTITY CASCADE", commit=True)
 
-                        if 'productos' in xls.sheet_names:
-                            status.write("📥 Cargando Productos...")
-                            df_p = pd.read_excel(xls, 'productos')
-                            df_p.columns = [str(col).strip().lower() for col in df_p.columns]
-                            for _, row in df_p.iterrows():
-                                db_query("""INSERT INTO productos (nombre, tipo, unidad, stock_actual, costo_u, precio_v, precio_v2) 
-                                         VALUES (:n, :t, :u, :s, :c, :p1, :p2)""",
-                                         {"n": str(row.get('nombre', '')).strip().upper(), 
-                                          "t": str(row.get('tipo', 'insumo')).lower(),
-                                          "u": str(row.get('unidad', 'Un')), 
-                                          "s": safe_float(row.get('stock_actual', 0)),
-                                          "c": safe_float(row.get('costo_u', 0)), 
-                                          "p1": safe_float(row.get('precio_v', 0)),
-                                          "p2": safe_float(row.get('precio_v2', 0))}, commit=True)
+                        # 2. CARGA DE PRODUCTOS
+                        status.write("📥 Cargando Productos...")
+                        df_p = pd.read_excel(xls, 'productos')
+                        df_p.columns = [str(col).strip().lower() for col in df_p.columns]
+                        for _, row in df_p.iterrows():
+                            db_query("""INSERT INTO productos (nombre, tipo, unidad, stock_actual, costo_u, precio_v, precio_v2) 
+                                     VALUES (:n, :t, :u, :s, :c, :p1, :p2)""",
+                                     {"n": str(row.get('nombre', '')).strip().upper(), 
+                                      "t": str(row.get('tipo', 'insumo')).lower(),
+                                      "u": str(row.get('unidad', 'Un')), 
+                                      "s": safe_float(row.get('stock_actual', 0)),
+                                      "c": safe_float(row.get('costo_u', 0)), 
+                                      "p1": safe_float(row.get('precio_v', 0)),
+                                      "p2": safe_float(row.get('precio_v2', 0))}, commit=True)
 
-                        # Mapeo de IDs para consistencia
+                        # Creamos mapa de IDs reales de Supabase (Nombre -> ID Nuevo)
                         prods_db = db_query("SELECT id, nombre FROM productos")
-                        mapa_id = dict(zip(prods_db['nombre'], prods_db['id']))
+                        mapa_id_real = dict(zip(prods_db['nombre'], prods_db['id']))
+                        
+                        # Creamos mapa del Excel (ID Viejo -> Nombre) para traducir tu pestaña de recetas
+                        mapa_nombres_excel = dict(zip(df_p['id'], df_p['nombre'].str.strip().str.upper()))
 
+                        # 3. CARGA DE RECETAS (Mapeo ID Viejo -> Nombre -> ID Nuevo)
                         if 'recetas' in xls.sheet_names:
-                            status.write("🧪 Vinculando Recetas...")
+                            status.write("🧪 Vinculando Recetas por ID...")
                             df_r = pd.read_excel(xls, 'recetas')
                             df_r.columns = [str(col).strip().lower() for col in df_r.columns]
                             for _, row in df_r.iterrows():
-                                id_f = mapa_id.get(str(row.get('nombre_final', row.get('id_final', ''))).strip().upper())
-                                id_i = mapa_id.get(str(row.get('nombre_insumo', row.get('id_insumo', ''))).strip().upper())
-                                if id_f and id_i:
+                                # Obtenemos nombres desde el ID del excel
+                                nombre_f = mapa_nombres_excel.get(row.get('id_final'))
+                                nombre_i = mapa_nombres_excel.get(row.get('id_insumo'))
+                                
+                                # Buscamos el ID real en Supabase por esos nombres
+                                id_f_real = mapa_id_real.get(nombre_f)
+                                id_i_real = mapa_id_real.get(nombre_i)
+                                
+                                if id_f_real and id_i_real:
                                     db_query("INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (:idf, :idi, :c)",
-                                             {"idf": id_f, "idi": id_i, "c": safe_float(row.get('cantidad', 0))}, commit=True)
+                                             {"idf": id_f_real, "idi": id_i_real, "c": safe_float(row.get('cantidad', 0))}, commit=True)
 
+                        # 4. CARGA DE HISTORIAL DE COMPRAS (Nueva sección)
+                        if 'historial_compras' in xls.sheet_names:
+                            status.write("🛍️ Importando Historial de Compras...")
+                            df_c = pd.read_excel(xls, 'historial_compras')
+                            df_c.columns = [str(col).strip().lower() for col in df_c.columns]
+                            for _, row in df_c.iterrows():
+                                db_query("""INSERT INTO historial_compras (fecha, insumo, cantidad, costo_u, total, metodo_pago)
+                                         VALUES (:f, :i, :c, :cu, :t, :m)""",
+                                         {"f": row.get('fecha'), "i": str(row.get('insumo', '')).upper(),
+                                          "c": safe_float(row.get('cantidad', 0)), "cu": safe_float(row.get('costo_u', 0)),
+                                          "t": safe_float(row.get('total', 0)), "m": str(row.get('metodo_pago', 'Efectivo'))}, commit=True)
+
+                        # 5. CARGA DE HISTORIAL DE VENTAS
                         if 'historial_ventas' in xls.sheet_names:
-                            status.write("📈 Importando Ventas...")
+                            status.write("📈 Importando Historial de Ventas...")
                             df_v = pd.read_excel(xls, 'historial_ventas')
                             df_v.columns = [str(col).strip().lower() for col in df_v.columns]
                             for _, row in df_v.iterrows():
@@ -150,21 +174,39 @@ if menu == "📦 Inventario y Alta":
                                           "m": str(row.get('metodo_pago', 'Efectivo')),
                                           "cm": safe_float(row.get('costo_momento', row.get('costo_tot', 0)))}, commit=True)
 
-                        status.write("💰 Sincronizando Caja...")
+                        # 6. SINCRONIZACIÓN FINAL DE CAJA
+                        status.write("💰 Sincronizando Caja (Ingresos - Egresos)...")
                         db_query("INSERT INTO saldos_caja (tipo_cuenta, saldo) VALUES ('Efectivo', 0), ('Banco', 0), ('Deuda_TC', 0) ON CONFLICT DO NOTHING", commit=True)
+                        
+                        # Resetear saldos antes de recalcular
+                        db_query("UPDATE saldos_caja SET saldo = 0", commit=True)
+                        
+                        # Sumar Ventas e Historial de Compras por método
                         db_query("""
-                            UPDATE saldos_caja SET saldo = (SELECT COALESCE(SUM(total_venta), 0) FROM historial_ventas WHERE LOWER(metodo_pago) LIKE '%efectivo%') WHERE tipo_cuenta = 'Efectivo';
-                            UPDATE saldos_caja SET saldo = (SELECT COALESCE(SUM(total_venta), 0) FROM historial_ventas WHERE LOWER(metodo_pago) NOT LIKE '%efectivo%' AND LOWER(metodo_pago) NOT LIKE '%tarjeta%') WHERE tipo_cuenta = 'Banco';
+                            -- Efectivo: Ventas - Compras
+                            UPDATE saldos_caja SET saldo = (
+                                (SELECT COALESCE(SUM(total_venta), 0) FROM historial_ventas WHERE LOWER(metodo_pago) LIKE '%efectivo%') -
+                                (SELECT COALESCE(SUM(total), 0) FROM historial_compras WHERE LOWER(metodo_pago) LIKE '%efectivo%')
+                            ) WHERE tipo_cuenta = 'Efectivo';
+                            
+                            -- Banco: Ventas - Compras
+                            UPDATE saldos_caja SET saldo = (
+                                (SELECT COALESCE(SUM(total_venta), 0) FROM historial_ventas WHERE LOWER(metodo_pago) NOT LIKE '%efectivo%' AND LOWER(metodo_pago) NOT LIKE '%tarjeta%') -
+                                (SELECT COALESCE(SUM(total), 0) FROM historial_compras WHERE LOWER(metodo_pago) NOT LIKE '%efectivo%' AND LOWER(metodo_pago) NOT LIKE '%tarjeta%')
+                            ) WHERE tipo_cuenta = 'Banco';
+                            
+                            -- Deuda TC: Solo Compras con Tarjeta
+                            UPDATE saldos_caja SET saldo = (SELECT COALESCE(SUM(total), 0) FROM historial_compras WHERE LOWER(metodo_pago) LIKE '%tarjeta%') 
+                            WHERE tipo_cuenta = 'Deuda_TC';
                         """, commit=True)
 
-                        status.update(label="✨ Restauración Exitosa", state="complete", expanded=False)
+                        status.update(label="✨ ¡Restauración Maestra Exitosa!", state="complete", expanded=False)
                         st.cache_data.clear()
                         st.rerun()
 
                     except Exception as e:
-                        status.update(label="❌ Falló la carga", state="error")
-                        st.error(f"Error detallado: {str(e)}")
-
+                        status.update(label="❌ Error crítico", state="error")
+                        st.error(f"Fallo en: {str(e)}")
 
         st.divider()
         clave_b = st.text_input("Clave de Seguridad:", type="password")
