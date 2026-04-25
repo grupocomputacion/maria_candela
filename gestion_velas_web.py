@@ -691,32 +691,75 @@ elif menu == "💰 Flujo de Caja":
 
 
 # ==========================================
-# 📊 9. ANÁLISIS DE RESULTADOS (MODO ROBUSTO)
+# 📊 9. ANÁLISIS DE RESULTADOS (VERSIÓN PRO)
 # ==========================================
 elif menu == "📊 Análisis de Resultados":
     st.header("📊 Análisis de Negocio y Valoración")
     
-    # 1. Traer Ventas
+    # 1. CÁLCULO DE RENTABILIDAD REAL
     df_v = db_query("SELECT fecha, producto, cantidad, total_venta, costo_momento FROM historial_ventas")
     
     if df_v is not None and not df_v.empty:
         df_v['fecha'] = pd.to_datetime(df_v['fecha'])
+        # Si el costo_momento es 0, intentamos recuperarlo del costo actual del producto
         df_v['Ganancia'] = df_v['total_venta'] - (df_v['cantidad'] * df_v['costo_momento'])
         
-        # Agrupación por mes
         df_v['Mes'] = df_v['fecha'].dt.strftime('%Y-%m')
-        resumen = df_v.groupby('Mes').agg({'total_venta':'sum', 'Ganancia':'sum'}).rename(columns={'total_venta':'Ventas'})
+        resumen = df_v.groupby('Mes').agg({
+            'total_venta': 'sum',
+            'Ganancia': 'sum'
+        }).rename(columns={'total_venta': 'Ventas'})
         
         st.subheader("📈 Rentabilidad Mensual")
         st.dataframe(resumen.style.format("$ {:,.2f}"), use_container_width=True)
     else:
-        st.warning("⚠️ Sin datos en el historial. Cargá el SQL en Supabase.")
+        st.warning("⚠️ No hay datos de ventas para analizar rentabilidad.")
 
-    # 2. Valoración de Stock (Independiente de las ventas)
+    # 2. VALORACIÓN DE STOCK Y PROYECCIÓN (FORECAST)
     st.divider()
-    st.subheader("📦 Valoración de Stock")
-    df_stk = db_query("SELECT nombre, stock_actual, costo_u, precio_v, precio_v2 FROM productos WHERE stock_actual > 0")
+    st.subheader("📦 Valoración y Proyección de Stock")
+    
+    # Traemos solo productos finales para la proyección de ventas
+    df_stk = db_query("""
+        SELECT nombre, stock_actual, costo_u, precio_v, precio_v2 
+        FROM productos 
+        WHERE stock_actual > 0 AND UPPER(tipo) = 'FINAL'
+    """)
+    
+    # Traemos insumos solo para el capital inmovilizado
+    df_ins = db_query("SELECT stock_actual, costo_u FROM productos WHERE stock_actual > 0 AND UPPER(tipo) = 'INSUMO'")
+
     if df_stk is not None and not df_stk.empty:
-        val_costo = (df_stk['stock_actual'] * df_stk['costo_u']).sum()
-        st.metric("💰 Capital en Mercadería", f"$ {val_costo:,.2f}")
-        st.dataframe(df_stk, hide_index=True)
+        # Cálculos de Valoración
+        cap_finales = (df_stk['stock_actual'] * df_stk['costo_u']).sum()
+        cap_insumos = (df_ins['stock_actual'] * df_ins['costo_u']).sum() if df_ins is not None else 0
+        
+        forecast_l1 = (df_stk['stock_actual'] * df_stk['precio_v']).sum()
+        forecast_l2 = (df_stk['stock_actual'] * df_stk['precio_v2']).sum()
+
+        # Métricas principales
+        c1, c2, c3 = st.columns(3)
+        c1.metric("📉 Capital en Finales", f"$ {cap_finales:,.2f}")
+        c2.metric("💰 Proyección Lista 1", f"$ {forecast_l1:,.2f}")
+        c3.metric("💰 Proyección Lista 2", f"$ {forecast_l2:,.2f}")
+        
+        st.info(f"📦 **Capital Total Inmovilizado (Insumos + Finales):** $ {cap_finales + cap_insumos:,.2f}")
+
+        # Tabla de Proyección Detallada
+        df_stk['Total L1'] = df_stk['stock_actual'] * df_stk['precio_v']
+        df_stk['Total L2'] = df_stk['stock_actual'] * df_stk['precio_v2']
+        
+        st.write("### 📝 Detalle de Proyección por Producto")
+        st.dataframe(
+            df_stk[['nombre', 'stock_actual', 'precio_v', 'Total L1', 'precio_v2', 'Total L2']],
+            column_config={
+                "precio_v": st.column_config.NumberColumn("Precio L1", format="$ %.2f"),
+                "Total L1": st.column_config.NumberColumn("Subtotal L1", format="$ %.2f"),
+                "precio_v2": st.column_config.NumberColumn("Precio L2", format="$ %.2f"),
+                "Total L2": st.column_config.NumberColumn("Subtotal L2", format="$ %.2f"),
+            },
+            hide_index=True,
+            use_container_width=True
+        )
+    else:
+        st.error("No se encontraron productos de tipo 'FINAL' con stock para proyectar.")
