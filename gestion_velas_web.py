@@ -61,7 +61,8 @@ menu = st.sidebar.radio("Ir a:", [
     "📊 Caja y Filtros",
     "📈 Rentabilidad",
     "💰 Flujo de Caja",
-    "📊 Análisis de Resultados"
+    "📊 Análisis de Resultados",
+    "🔄 Actualización Masiva"
 ])
 
 # ==========================================
@@ -672,3 +673,73 @@ elif menu == "📊 Análisis de Resultados":
         )
     else:
         st.error("No se encontraron productos de tipo 'FINAL' con stock para proyectar.")
+
+# ==========================================
+# 🔄 10. ACTUALIZACIÓN MASIVA DE PRECIOS
+# ==========================================
+elif menu == "🔄 Actualización Masiva":
+    st.header("🔄 Recalcular Precios de Venta")
+    st.info("Esta función recorre todos los productos FINALES, suma sus costos actuales de insumos y actualiza los precios L1 y L2 manteniendo tus porcentajes de ganancia.")
+
+    if st.button("🚀 Iniciar Recálculo de Todo el Catálogo", use_container_width=True, type="primary"):
+        # 1. Obtenemos todos los productos finales
+        productos_finales = db_query("SELECT id, nombre, precio_v, precio_v2, costo_u FROM productos WHERE UPPER(tipo) = 'FINAL'")
+        
+        if productos_finales is not None and not productos_finales.empty:
+            progreso = st.progress(0)
+            contador = 0
+            total_prods = len(productos_finales)
+            
+            for index, prod in productos_finales.iterrows():
+                id_f = int(prod['id'])
+                
+                # 2. Calculamos el nuevo costo sumando la receta
+                query_costo = """
+                    SELECT SUM(r.cantidad * COALESCE(p.costo_u, 0)) as nuevo_costo
+                    FROM recetas r
+                    JOIN productos p ON r.id_insumo = p.id
+                    WHERE r.id_final = :idf
+                """
+                res_costo = db_query(query_costo, {"idf": id_f})
+                nuevo_costo = float(res_costo['nuevo_costo'].iloc[0]) if res_costo is not None and not res_costo['nuevo_costo'].isnull().all() else 0.0
+                
+                # 3. Recuperamos los porcentajes actuales
+                # Si el precio actual es > costo actual, calculamos el % que el usuario venía usando
+                costo_viejo = float(prod['costo_u']) if prod['costo_u'] and prod['costo_u'] > 0 else nuevo_costo
+                
+                # Calculamos el margen actual para L1 y L2 (si no hay, asumimos 0)
+                margen_l1 = (float(prod['precio_v']) / costo_viejo) if costo_viejo > 0 and prod['precio_v'] else 1.0
+                margen_l2 = (float(prod['precio_v2']) / costo_viejo) if costo_viejo > 0 and prod['precio_v2'] else 1.0
+                
+                # 4. Aplicamos los márgenes al NUEVO COSTO
+                nuevo_p1 = nuevo_costo * margen_l1
+                nuevo_p2 = nuevo_costo * margen_l2
+                
+                # 5. Grabamos en la base de datos
+                db_query(
+                    """UPDATE productos 
+                       SET costo_u = :c, precio_v = :p1, precio_v2 = :p2 
+                       WHERE id = :id""",
+                    {"c": nuevo_costo, "p1": nuevo_p1, "p2": nuevo_p2, "id": id_f},
+                    commit=True
+                )
+                
+                contador += 1
+                progreso.progress(contador / total_prods)
+            
+            st.success(f"✅ Se actualizaron {contador} productos finales con éxito.")
+            st.cache_data.clear()
+        else:
+            st.warning("No se encontraron productos finales para actualizar.")
+
+    st.divider()
+    st.subheader("Vista Previa de Costos Actuales")
+    # Mostramos una tabla rápida para que el usuario vea qué se va a actualizar
+    vista_previa = db_query("""
+        SELECT p.nombre, p.costo_u as costo_registrado, 
+               (SELECT SUM(r.cantidad * i.costo_u) FROM recetas r JOIN productos i ON r.id_insumo = i.id WHERE r.id_final = p.id) as costo_real_receta
+        FROM productos p 
+        WHERE UPPER(p.tipo) = 'FINAL'
+    """)
+    if vista_previa is not None:
+        st.dataframe(vista_previa, use_container_width=True)        
