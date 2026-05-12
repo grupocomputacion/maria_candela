@@ -202,33 +202,37 @@ elif menu == "🧪 Recetas y Costeo":
     c1, c2 = st.columns([1, 2])
 
     with c1:
-        st.subheader("Añadir insumo")
-        if df_i is not None and not df_i.empty:
-            with st.form("form_add_insumo"):
-                # 1. Definimos los widgets
-                nombre_insumo = st.selectbox("Insumo:", df_i['nombre'].tolist())
-                
-                # Necesitamos mostrar la unidad, así que buscamos la fila solo para la etiqueta
-                # pero no para el ID definitivo todavía
-                unidad_display = df_i[df_i['nombre'] == nombre_insumo]['unidad'].iloc[0]
-                cant = st.number_input(f"Cantidad ({unidad_display})", min_value=0.001, format="%.3f")
-
-                # 2. Procesamos la lógica SOLO al hacer clic
-                if st.form_submit_button("➕ Añadir"):
-                    # Buscamos el ID real en el momento del envío
-                    row_seleccionada = df_i[df_i['nombre'] == nombre_insumo].iloc[0]
-                    id_insumo_real = int(row_seleccionada['id'])
+            st.subheader("Añadir insumo")
+            if df_i is not None and not df_i.empty:
+                # Importante: El formulario debe procesar la búsqueda del ID adentro
+                with st.form("form_add_insumo", clear_on_submit=True):
+                    nombre_insumo = st.selectbox("Insumo:", df_i['nombre'].tolist())
                     
-                    db_query(
-                        "INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (:idf, :idi, :c) "
-                        "ON CONFLICT (id_final, id_insumo) DO UPDATE SET cantidad = EXCLUDED.cantidad",
-                        {"idf": id_f, "idi": id_insumo_real, "c": cant}, 
-                        commit=True
-                    )
-                    st.cache_data.clear()
-                    st.rerun()
-        else:
-            st.info("Sin insumos cargados.")
+                    # Buscamos la unidad para mostrarla (evita el 'nan' de la foto)
+                    datos_insumo = df_i[df_i['nombre'] == nombre_insumo].iloc[0]
+                    unidad_txt = datos_insumo['unidad'] if datos_insumo['unidad'] else "un"
+                    
+                    cant = st.number_input(f"Cantidad ({unidad_txt})", min_value=0.000, step=0.100, format="%.3f")
+
+                    if st.form_submit_button("➕ Añadir"):
+                        if cant > 0:
+                            # Buscamos el ID real justo al presionar el botón
+                            id_insumo_real = int(datos_insumo['id'])
+                            
+                            # Ejecutamos el insert/update
+                            db_query(
+                                "INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (:idf, :idi, :c) "
+                                "ON CONFLICT (id_final, id_insumo) DO UPDATE SET cantidad = EXCLUDED.cantidad",
+                                {"idf": id_f, "idi": id_insumo_real, "c": cant}, 
+                                commit=True
+                            )
+                            # Limpiamos caché para que la tabla de la derecha se entere del cambio
+                            st.cache_data.clear()
+                            st.rerun()
+                        else:
+                            st.warning("La cantidad debe ser mayor a cero.")
+            else:
+                st.info("No hay insumos cargados en el sistema.")
     with c2:
         st.subheader("Estructura de Costos")
         df_rec = db_query(
