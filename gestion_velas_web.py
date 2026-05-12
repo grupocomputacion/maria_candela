@@ -204,39 +204,27 @@ elif menu == "🧪 Recetas y Costeo":
     with c1:
         st.subheader("Añadir insumo")
         if df_i is not None and not df_i.empty:
-            # Usamos un formulario con una clave única
-            with st.form(key=f"form_receta_{id_f}", clear_on_submit=True):
-                nombre_insumo = st.selectbox("Insumo:", df_i['nombre'].tolist())
-                
-                # Buscamos los datos del insumo seleccionado PARA MOSTRAR
-                datos_i = df_i[df_i['nombre'] == nombre_insumo].iloc[0]
-                # Evitamos el 'nan' visual
-                u_txt = str(datos_i['unidad']) if pd.notna(datos_i['unidad']) else "un"
-                
-                cant = st.number_input(f"Cantidad ({u_txt})", min_value=0.000, step=0.100, format="%.3f")
+            with st.form(key=f"form_add_{id_f}"):
+                sel_i_nombre = st.selectbox("Insumo:", df_i['nombre'].tolist())
+                datos_i = df_i[df_i['nombre'] == sel_i_nombre].iloc[0]
+                u_display = str(datos_i['unidad']) if pd.notna(datos_i['unidad']) else "un"
+                cant = st.number_input(f"Cantidad ({u_display})", min_value=0.000, step=0.100, format="%.3f")
 
                 if st.form_submit_button("➕ Añadir"):
                     if cant > 0:
                         id_insumo_real = int(datos_i['id'])
+                        # GRABAMOS
+                        db_query(
+                            "INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (:idf, :idi, :c) "
+                            "ON CONFLICT (id_final, id_insumo) DO UPDATE SET cantidad = EXCLUDED.cantidad",
+                            {"idf": id_f, "idi": id_insumo_real, "c": cant}, 
+                            commit=True
+                        )
                         
-                        # 1. EJECUTAR EL INSERT/UPDATE
-                        sql_insert = """
-                            INSERT INTO recetas (id_final, id_insumo, cantidad) 
-                            VALUES (:idf, :idi, :c) 
-                            ON CONFLICT (id_final, id_insumo) 
-                            DO UPDATE SET cantidad = EXCLUDED.cantidad
-                        """
-                        # Ejecutamos con commit=True explícito
-                        db_query(sql_insert, {"idf": id_f, "idi": id_insumo_real, "c": cant}, commit=True)
-                        
-                        # 2. LIMPIAR CACHÉ (CRÍTICO para que la columna derecha se actualice)
-                        st.cache_data.clear()
-                        
-                        # 3. MENSAJE TEMPORAL DE CONFIRMACIÓN
-                        st.success(f"Añadido: {nombre_insumo}")
-                        
-                        # 4. RECARGA
-                        st.rerun()
+                        # LIMPIEZA TOTAL DE CACHÉ (ESTO ES LO QUE FALTA)
+                        st.cache_data.clear() # Borra toda la memoria temporal de Streamlit
+                        st.success(f"✅ {sel_i_nombre} añadido correctamente.")
+                        st.rerun() # Fuerza a la app a volver a empezar y leer la DB de cero
                     else:
                         st.warning("La cantidad debe ser mayor a 0")
         else:
@@ -245,8 +233,10 @@ elif menu == "🧪 Recetas y Costeo":
 
     with c2:
         st.subheader("Estructura de Costos")
+        # Forzamos la consulta de nuevo
         df_rec = db_query(
-            """SELECT r.id as receta_id, i.nombre, r.cantidad, i.unidad, i.costo_u, (r.cantidad * i.costo_u) as subtotal
+            """SELECT r.id as receta_id, i.nombre, r.cantidad, i.unidad, i.costo_u, 
+               (r.cantidad * i.costo_u) as subtotal
                FROM recetas r JOIN productos i ON r.id_insumo = i.id
                WHERE r.id_final = :id ORDER BY i.nombre""", {"id": id_f}
         )
