@@ -201,37 +201,26 @@ elif menu == "🧪 Recetas y Costeo":
 
     c1, c2 = st.columns([1, 2])
 
-    # --- COLUMNA 1: AÑADIR ---
-# --- COLUMNA 1: GRABADO EXPLÍCITO ---
+# --- COLUMNA 1: GRABACIÓN CON VERIFICACIÓN ---
     with c1:
         st.subheader("Añadir insumo")
-        
         if df_i is not None and not df_i.empty:
-            # Mostramos el ID para control total
             st.write(f"🏷️ **ID Producto Final:** {id_f_limpio}")
             
-            # Selectores
             ins_nombre = st.selectbox("Insumo:", df_i['nombre'].tolist(), key=f"ins_sel_{id_f_limpio}")
             det_i = df_i[df_i['nombre'] == ins_nombre].iloc[0]
             
-            # Unidad e ID de insumo
             u_txt = str(det_i['unidad']) if pd.notna(det_i['unidad']) else "un"
             id_insumo_real = int(det_i['id'])
-            
-            # Cantidad
             cant_input = st.number_input(f"Cantidad ({u_txt})", min_value=0.0, step=0.1, format="%.3f", key=f"qty_val_{id_f_limpio}")
 
-            # BOTÓN DE ACCIÓN
             if st.button("🚀 GUARDAR EN BASE DE DATOS", use_container_width=True):
                 if cant_input > 0:
-                    # Preparamos los parámetros
-                    params = {
-                        "idf": id_f_limpio, 
-                        "idi": id_insumo_real, 
-                        "c": float(cant_input)
-                    }
+                    # Forzamos tipos nativos para evitar conflictos con PostgreSQL
+                    p_idf = int(id_f_limpio)
+                    p_idi = int(id_insumo_real)
+                    p_cant = float(cant_input)
                     
-                    # EJECUCIÓN
                     sql = """
                         INSERT INTO recetas (id_final, id_insumo, cantidad) 
                         VALUES (:idf, :idi, :c) 
@@ -239,83 +228,56 @@ elif menu == "🧪 Recetas y Costeo":
                         DO UPDATE SET cantidad = EXCLUDED.cantidad
                     """
                     
-                    # Llamamos a la base
-                    db_query(sql, params, commit=True)
-                    
-                    # FORZAMOS EL MENSAJE ANTES DEL RERUN
-                    st.success(f"¡LOGRADO! Se grabó {ins_nombre} correctamente.")
-                    st.cache_data.clear()
-                    
-                    # Botón extra para confirmar que viste el mensaje antes de refrescar la lista
-                    if st.button("Ver cambios en la lista"):
-                        st.rerun()
+                    try:
+                        # Ejecutamos la grabación
+                        db_query(sql, {"idf": p_idf, "idi": p_idi, "c": p_cant}, commit=True)
+                        
+                        # VERIFICACIÓN INMEDIATA: Consultamos si el registro existe ahora
+                        check = db_query("SELECT id FROM recetas WHERE id_final = :f AND id_insumo = :i", 
+                                        {"f": p_idf, "i": p_idi})
+                        
+                        if check is not None and not check.empty:
+                            st.success(f"✅ CONFIRMADO EN DB: {ins_nombre} guardado.")
+                            st.cache_data.clear()
+                            st.rerun()
+                        else:
+                            st.error("❌ ERROR CRÍTICO: El sistema dijo 'Logrado' pero la base de datos NO tiene el registro. Verifique permisos de escritura en Supabase.")
+                    except Exception as e:
+                        st.error(f"❌ FALLO TÉCNICO: {e}")
                 else:
                     st.warning("La cantidad debe ser mayor a 0.")
-        else:
-            st.error("No hay insumos disponibles.")
 
-    # --- COLUMNA 2: ESTRUCTURA Y CÁLCULOS ---
+    # --- COLUMNA 2: LISTADO SIN FILTROS ---
     with c2:
         st.subheader("Estructura de Costos")
         
-        # Botón de refresco manual por si las moscas
-        if st.button("🔄 Actualizar Vista"):
+        if st.button("🔄 Forzar Recarga"):
             st.cache_data.clear()
             st.rerun()
 
-        # Query de visualización con COALESCE para evitar que el 'nan' rompa el JOIN
-        df_rec = db_query(
-            """SELECT r.id as rid, p.nombre as n, r.cantidad as c, 
-                      COALESCE(p.unidad, 'un') as u, 
-                      COALESCE(p.costo_u, 0) as cu,
-                      (r.cantidad * COALESCE(p.costo_u, 0)) as sub
-               FROM recetas r
-               LEFT JOIN productos p ON r.id_insumo = p.id
-               WHERE r.id_final = :id_f
-               ORDER BY r.id DESC""", 
-            {"id_f": id_f_limpio}
-        )
+        # Usamos una query simplificada para asegurar que traiga datos
+        query_lista = """
+            SELECT r.id, p.nombre, r.cantidad, p.unidad, p.costo_u
+            FROM recetas r
+            INNER JOIN productos p ON r.id_insumo = p.id
+            WHERE r.id_final = :idf
+        """
+        df_rec = db_query(query_lista, {"idf": id_f_limpio})
 
-        costo_total = 0.0
         if df_rec is not None and not df_rec.empty:
-            costo_total = float(df_rec['sub'].sum())
-            st.metric("💰 Costo Total Fabricación", f"$ {costo_total:,.2f}")
-
-            for _, r in df_rec.iterrows():
-                col_n, col_q, col_s, col_b = st.columns([3, 1.5, 1.5, 0.5])
-                col_n.write(f"**{r['n']}**")
-                col_q.write(f"{r['c']} {r['u']}")
-                col_s.write(f"$ {r['sub']:,.2f}")
-                
-                if col_b.button("🗑️", key=f"del_{r['rid']}"):
-                    db_query("DELETE FROM recetas WHERE id = :id", {"id": int(r['rid'])}, commit=True)
-                    st.cache_data.clear()
-                    st.rerun()
-
-            st.divider()
+            # Calculamos subtotal en Python para evitar errores de SQL
+            df_rec['subtotal'] = df_rec['cantidad'] * df_rec['costo_u'].fillna(0)
+            total = df_rec['subtotal'].sum()
             
-            # --- SECCIÓN DE PRECIOS (RECUPERADA) ---
-            st.subheader("📈 Precios de Venta")
-            with st.form("form_precios_sincro_final"):
-                ca, cb = st.columns(2)
-                with ca:
-                    m1 = st.radio("Cálculo L1", ["Precio", "%"], horizontal=True, key="m1_radio")
-                    v1 = st.number_input("Valor L1", value=float(row_actual['precio_v']) if row_actual['precio_v'] else 0.0)
-                    p1 = v1 if m1 == "Precio" else costo_total * (1 + v1/100)
-                with cb:
-                    m2 = st.radio("Cálculo L2", ["Precio", "%"], horizontal=True, key="m2_radio")
-                    v2 = st.number_input("Valor L2", value=float(row_actual['precio_v2']) if row_actual['precio_v2'] else 0.0)
-                    p2 = v2 if m2 == "Precio" else costo_total * (1 + v2/100)
-                
-                if st.form_submit_button("💾 GUARDAR PRECIOS EN INVENTARIO"):
-                    db_query(
-                        "UPDATE productos SET costo_u = :c, precio_v = :p1, precio_v2 = :p2 WHERE id = :id",
-                        {"c": costo_total, "p1": p1, "p2": p2, "id": id_f_limpio}, commit=True
-                    )
-                    st.cache_data.clear()
-                    st.rerun()
+            st.metric("Costo Total", f"$ {total:,.2f}")
+            
+            for _, r in df_rec.iterrows():
+                cols = st.columns([3, 2, 1])
+                cols[0].write(f"**{r['nombre']}**")
+                cols[1].write(f"{r['cantidad']} {r['unidad']}")
+                cols[2].write(f"$ {r['subtotal']:,.2f}")
         else:
-            st.info(f"Aún no hay insumos para el Producto ID {id_f_limpio}.")
+            st.warning(f"No se encontraron registros para el ID {id_f_limpio}. Si la query en Supabase también falla, el INSERT no está funcionando.")
 
 
 # ==========================================
