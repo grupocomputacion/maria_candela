@@ -202,41 +202,40 @@ elif menu == "🧪 Recetas y Costeo":
     c1, c2 = st.columns([1, 2])
 
     # --- COLUMNA 1: GRABACIÓN DIRECTA ---
+# --- COLUMNA 1: GRABACIÓN ATÓMICA ---
     with c1:
         st.subheader("Añadir insumo")
-        st.code(f"ID Producto Destino: {id_f_actual}")
+        st.caption(f"Producto Final ID: {id_f_actual}")
         
         if df_i is not None and not df_i.empty:
-            ins_nom = st.selectbox("Seleccione Insumo:", df_i['nombre'].tolist(), key=f"ins_box_{id_f_actual}")
+            # 1. Selector de Insumo
+            ins_nom = st.selectbox("Insumo:", df_i['nombre'].tolist(), key=f"ins_box_{id_f_actual}")
             det_i = df_i[df_i['nombre'] == ins_nom].iloc[0]
-            u_medida = str(det_i['unidad']) if pd.notna(det_i['unidad']) else "un"
             
+            # 2. Cantidad
+            u_medida = str(det_i['unidad']) if pd.notna(det_i['unidad']) else "un"
             cant_in = st.number_input(f"Cantidad ({u_medida})", min_value=0.0, step=0.1, format="%.3f", key=f"qty_val_{id_f_actual}")
 
-            if st.button("➕ GRABAR AHORA", use_container_width=True, type="primary"):
+            # 3. BOTÓN DE GRABADO CON VALIDACIÓN DE RETORNO
+            if st.button("➕ GRABAR EN BASE DE DATOS", use_container_width=True, type="primary"):
                 if cant_in > 0:
-                    # USAMOS CONEXIÓN DIRECTA PARA EVITAR FALLOS DE DB_QUERY
-                    conn = conectar() 
-                    if conn:
-                        try:
-                            with conn.cursor() as cur:
-                                sql = """
-                                    INSERT INTO recetas (id_final, id_insumo, cantidad) 
-                                    VALUES (%s, %s, %s) 
-                                    ON CONFLICT (id_final, id_insumo) 
-                                    DO UPDATE SET cantidad = EXCLUDED.cantidad
-                                """
-                                # Ejecución con parámetros posicionales (%s) que es más seguro en Postgres
-                                cur.execute(sql, (id_f_actual, int(det_i['id']), cant_in))
-                                conn.commit() # ¡ESTO ES LO MÁS IMPORTANTE!
-                                
-                                st.success(f"✅ ¡EXITO! Grabado en Supabase: {ins_nom}")
-                                st.cache_data.clear()
-                                st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ ERROR AL GRABAR: {e}")
-                        finally:
-                            conn.close()
+                    # Usamos db_query pero con una estructura que fuerza el impacto
+                    sql_add = """
+                        INSERT INTO recetas (id_final, id_insumo, cantidad) 
+                        VALUES (:idf, :idi, :c) 
+                        ON CONFLICT (id_final, id_insumo) 
+                        DO UPDATE SET cantidad = EXCLUDED.cantidad
+                    """
+                    try:
+                        # Intentamos grabar
+                        db_query(sql_add, {"idf": int(id_f_actual), "idi": int(det_i['id']), "c": float(cant_in)}, commit=True)
+                        
+                        # Si llegamos acá sin que explote, el dato DEBE estar en Supabase
+                        st.cache_data.clear()
+                        st.success(f"✅ Grabado: {ins_nom}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Fallo técnico al insertar: {e}")
                 else:
                     st.warning("La cantidad debe ser mayor a 0.")
         else:
