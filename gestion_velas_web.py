@@ -230,25 +230,51 @@ elif menu == "🧪 Recetas y Costeo":
 
     c1, c2 = st.columns([1, 2])
 
+
     with c1:
         st.subheader("Añadir insumo")
-        st.caption(f"Vinculando al Producto ID: {id_f_actual}")
+        st.info(f"ID Producto Destino: {id_f_actual}")
         
         if df_i is not None and not df_i.empty:
-            # Selector de insumo
-            ins_nom = st.selectbox("Insumo:", df_i['nombre'].tolist(), key=f"ins_sel_{id_f_actual}")
+            # 1. Elección de Insumo
+            ins_nom = st.selectbox("Seleccione Insumo:", df_i['nombre'].tolist(), key=f"sel_ins_{id_f_actual}")
             
-            # Buscamos unidad para el label (con salvaguarda para nan)
-            det_ins = df_i[df_i['nombre'] == ins_nom].iloc[0]
-            u_txt = str(det_ins['unidad']) if pd.notna(det_ins['unidad']) else "un"
+            # 2. Obtención inmediata de datos del insumo seleccionado
+            ins_match = df_i[df_i['nombre'] == ins_nom].iloc[0]
+            id_i_real = int(ins_match['id'])
+            u_medida = str(ins_match['unit']) if 'unit' in ins_match else "un" # Ajuste según nombre real de columna
             
-            st.number_input(f"Cantidad ({u_txt})", min_value=0.0, step=0.1, format="%.3f", key=f"qty_in_{id_f_actual}")
-            st.button("➕ Añadir a Receta", on_click=procesar_alta_receta, use_container_width=True, type="primary")
-            
-            if "mensaje_grabado" in st.session_state:
-                st.info(st.session_state["mensaje_grabado"])
+            # 3. Input de cantidad
+            cant_in = st.number_input(f"Cantidad ({u_medida})", min_value=0.0, step=0.1, format="%.3f", key=f"qty_val_{id_f_actual}")
+
+            # 4. BOTÓN CON LÓGICA DE VALIDACIÓN REAL
+            if st.button("➕ GRABAR EN BASE DE DATOS", use_container_width=True, type="primary"):
+                if cant_in > 0:
+                    # Preparamos la consulta
+                    sql_insert = """
+                        INSERT INTO recetas (id_final, id_insumo, cantidad) 
+                        VALUES (:idf, :idi, :c) 
+                        ON CONFLICT (id_final, id_insumo) 
+                        DO UPDATE SET cantidad = EXCLUDED.cantidad
+                    """
+                    params = {"idf": id_f_actual, "idi": id_i_real, "c": cant_in}
+                    
+                    # Intentamos la grabación
+                    resultado = db_query(sql_insert, params, commit=True)
+                    
+                    # Verificamos si la función db_query devolvió algo que indique error
+                    if resultado is not None and "error" in str(resultado).lower():
+                        st.error(f"Fallo de base de datos: {resultado}")
+                    else:
+                        # Si llegamos acá, forzamos limpieza y aviso
+                        st.cache_data.clear()
+                        st.success(f"CONFIRMADO: {ins_nom} guardado con ID {id_i_real}")
+                        # Pequeño delay y rerun para que la Columna 2 se entere
+                        st.rerun()
+                else:
+                    st.warning("La cantidad debe ser mayor a 0 para grabar.")
         else:
-            st.info("Sin insumos cargados.")
+            st.error("No se detectan insumos en la tabla productos.")
 
     with c2:
         st.subheader("Estructura de Costos")
