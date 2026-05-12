@@ -202,43 +202,57 @@ elif menu == "🧪 Recetas y Costeo":
     c1, c2 = st.columns([1, 2])
 
     # --- COLUMNA 1: AÑADIR ---
+# --- COLUMNA 1: GRABADO EXPLÍCITO ---
     with c1:
         st.subheader("Añadir insumo")
+        
         if df_i is not None and not df_i.empty:
-            # Ponemos el ID visible para estar 100% seguros de qué estamos haciendo
-            st.caption(f"Editando Producto ID: {id_f_limpio}")
+            # Mostramos el ID para control total
+            st.write(f"🏷️ **ID Producto Final:** {id_f_limpio}")
             
-            insumo_nombre = st.selectbox("Insumo:", df_i['nombre'].tolist(), key=f"ins_sel_{id_f_limpio}")
-            det_i = df_i[df_i['nombre'] == insumo_nombre].iloc[0]
+            # Selectores
+            ins_nombre = st.selectbox("Insumo:", df_i['nombre'].tolist(), key=f"ins_sel_{id_f_limpio}")
+            det_i = df_i[df_i['nombre'] == ins_nombre].iloc[0]
             
+            # Unidad e ID de insumo
             u_txt = str(det_i['unidad']) if pd.notna(det_i['unidad']) else "un"
+            id_insumo_real = int(det_i['id'])
+            
+            # Cantidad
             cant_input = st.number_input(f"Cantidad ({u_txt})", min_value=0.0, step=0.1, format="%.3f", key=f"qty_val_{id_f_limpio}")
 
-            if st.button("➕ GRABAR EN BASE DE DATOS", use_container_width=True, type="primary"):
+            # BOTÓN DE ACCIÓN
+            if st.button("🚀 GUARDAR EN BASE DE DATOS", use_container_width=True):
                 if cant_input > 0:
-                    # LIMPIEZA DE DATOS: PostgreSQL odia los tipos de datos de Pandas/Numpy
-                    # Pasamos todo a tipos nativos de Python antes de ir a db_query
-                    id_insumo_limpio = int(det_i['id'])
-                    cantidad_limpia = float(cant_input)
+                    # Preparamos los parámetros
+                    params = {
+                        "idf": id_f_limpio, 
+                        "idi": id_insumo_real, 
+                        "c": float(cant_input)
+                    }
                     
-                    sql_grabar = """
+                    # EJECUCIÓN
+                    sql = """
                         INSERT INTO recetas (id_final, id_insumo, cantidad) 
                         VALUES (:idf, :idi, :c) 
                         ON CONFLICT (id_final, id_insumo) 
                         DO UPDATE SET cantidad = EXCLUDED.cantidad
                     """
                     
-                    # Intentamos la grabación
-                    db_query(sql_grabar, {"idf": id_f_limpio, "idi": id_insumo_limpio, "c": cantidad_limpia}, commit=True)
+                    # Llamamos a la base
+                    db_query(sql, params, commit=True)
                     
-                    # Limpieza agresiva de cache
+                    # FORZAMOS EL MENSAJE ANTES DEL RERUN
+                    st.success(f"¡LOGRADO! Se grabó {ins_nombre} correctamente.")
                     st.cache_data.clear()
-                    st.success(f"✅ ¡Grabado! {insumo_nombre}")
-                    st.rerun()
+                    
+                    # Botón extra para confirmar que viste el mensaje antes de refrescar la lista
+                    if st.button("Ver cambios en la lista"):
+                        st.rerun()
                 else:
                     st.warning("La cantidad debe ser mayor a 0.")
         else:
-            st.info("Sin insumos.")
+            st.error("No hay insumos disponibles.")
 
     # --- COLUMNA 2: ESTRUCTURA Y CÁLCULOS ---
     with c2:
