@@ -280,27 +280,70 @@ elif menu == "🧪 Recetas y Costeo":
 
             st.divider()
             
-            # --- SECCIÓN DE PRECIOS (SIN ROMPERSE) ---
-            st.subheader("📈 Precios de Venta")
-            with st.form("form_precios_sincro_final"):
-                ca, cb = st.columns(2)
-                with ca:
-                    m1 = st.radio("Cálculo L1", ["Precio", "%"], horizontal=True, key="m1")
-                    v1 = st.number_input("Valor L1", value=float(row_actual['precio_v']) if row_actual['precio_v'] else 0.0)
-                    p1 = v1 if m1 == "Precio" else costo_fab * (1 + v1/100)
-                with cb:
-                    m2 = st.radio("Cálculo L2", ["Precio", "%"], horizontal=True, key="m2")
-                    v2 = st.number_input("Valor L2", value=float(row_actual['precio_v2']) if row_actual['precio_v2'] else 0.0)
-                    p2 = v2 if m2 == "Precio" else costo_fab * (1 + v2/100)
+            # --- SECCIÓN DE PRECIOS CON SIMULADOR DINÁMICO ---
+            st.divider()
+            st.subheader("📈 Simulador de Precios de Venta")
+            st.caption("Calculá tus márgenes antes de impactar en el Inventario")
+
+            # Recuperamos los porcentajes actuales para que el usuario sepa dónde está parado
+            # Margen = ((Precio / Costo) - 1) * 100
+            m_l1_act = ((float(row_actual['precio_v']) / costo_fab) - 1) * 100 if costo_fab > 0 and row_actual['precio_v'] else 0.0
+            m_l2_act = ((float(row_actual['precio_v2']) / costo_fab) - 1) * 100 if costo_fab > 0 and row_actual['precio_v2'] else 0.0
+
+            with st.container(border=True):
+                c_l1, c_l2 = st.columns(2)
                 
-                if st.form_submit_button("💾 ACTUALIZAR EN INVENTARIO"):
-                    db_query(
-                        "UPDATE productos SET costo_u = :c, precio_v = :p1, precio_v2 = :p2 WHERE id = :id",
-                        {"c": costo_fab, "p1": p1, "p2": p2, "id": id_f_actual}, commit=True
-                    )
-                    st.cache_data.clear()
-                    st.success("✅ Precios actualizados.")
-                    st.rerun()
+                with c_l1:
+                    st.markdown("**Lista 1 (Minorista)**")
+                    st.write(f"Actual: ${row_actual['precio_v'] if row_actual['precio_v'] else 0:,.2f} ({m_l1_act:,.1f}%)")
+                    
+                    tipo_l1 = st.radio("Calcular por:", ["Monto $", "Porcentaje %"], key="tipo_l1", horizontal=True)
+                    if tipo_l1 == "Monto $":
+                        p1_sim = st.number_input("Precio Final L1:", value=float(row_actual['precio_v']) if row_actual['precio_v'] else 0.0, step=10.0, key="in_p1")
+                        margen1 = ((p1_sim / costo_fab) - 1) * 100 if costo_fab > 0 else 0.0
+                        st.info(f"Equivale a un **{margen1:,.2f}%** de ganancia")
+                    else:
+                        m1_sim = st.number_input("Porcentaje L1:", value=m_l1_act, step=1.0, key="in_m1")
+                        p1_sim = costo_fab * (1 + m1_sim / 100)
+                        st.info(f"Equivale a un precio de **${p1_sim:,.2f}**")
+
+                with c_l2:
+                    st.markdown("**Lista 2 (Mayorista)**")
+                    st.write(f"Actual: ${row_actual['precio_v2'] if row_actual['precio_v2'] else 0:,.2f} ({m_l2_act:,.1f}%)")
+                    
+                    tipo_l2 = st.radio("Calcular por:", ["Monto $", "Porcentaje %"], key="tipo_l2", horizontal=True)
+                    if tipo_l2 == "Monto $":
+                        p2_sim = st.number_input("Precio Final L2:", value=float(row_actual['precio_v2']) if row_actual['precio_v2'] else 0.0, step=10.0, key="in_p2")
+                        margen2 = ((p2_sim / costo_fab) - 1) * 100 if costo_fab > 0 else 0.0
+                        st.info(f"Equivale a un **{margen2:,.2f}%** de ganancia")
+                    else:
+                        m2_sim = st.number_input("Porcentaje L2:", value=m_l2_act, step=1.0, key="in_m2")
+                        p2_sim = costo_fab * (1 + m2_sim / 100)
+                        st.info(f"Equivale a un precio de **${p2_sim:,.2f}**")
+
+                st.divider()
+                st.write(f"**RESUMEN A GRABAR:** L1: ${p1_sim:,.2f} | L2: ${p2_sim:,.2f} | Costo: ${costo_fab:,.2f}")
+                
+                # BOTÓN DE IMPACTO FINAL
+                if st.button("💾 CONFIRMAR Y GRABAR EN INVENTARIO", use_container_width=True, type="primary"):
+                    try:
+                        sql_upd = """
+                            UPDATE productos 
+                            SET costo_u = :c, precio_v = :p1, precio_v2 = :p2 
+                            WHERE id = :id
+                        """
+                        db_query(sql_upd, {
+                            "c": float(costo_fab), 
+                            "p1": float(p1_sim), 
+                            "p2": float(p2_sim), 
+                            "id": int(id_f_actual)
+                        }, commit=True)
+                        
+                        st.cache_data.clear()
+                        st.success("✅ Precios e Inventario actualizados correctamente.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error al actualizar: {e}")
         else:
             st.info("La receta está vacía. Añada insumos a la izquierda.")
 
