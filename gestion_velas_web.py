@@ -182,125 +182,123 @@ if menu == "📦 Inventario y Alta":
         st.info("La base de datos de productos está vacía. Usá el expander de Restauración arriba.")
 
 # ==========================================
-# 🧪 2. RECETAS Y COSTEO (SOLUCIÓN DEFINITIVA Y SIN ERRORES)
+# 🧪 2. RECETAS Y COSTEO (SOLUCIÓN FINAL)
 # ==========================================
 elif menu == "🧪 Recetas y Costeo":
     st.header("🧪 Composición y Costeo")
 
-    # 1. CARGA DE PRODUCTOS (Sin caché para asegurar frescura)
+    # 1. CARGA DE MAESTROS
     df_f = db_query("SELECT id, nombre, precio_v, precio_v2, costo_u FROM productos WHERE UPPER(tipo) = 'FINAL' ORDER BY nombre")
     df_i = db_query("SELECT id, nombre, unidad, costo_u FROM productos WHERE UPPER(tipo) = 'INSUMO' ORDER BY nombre")
 
     if df_f is None or df_f.empty:
-        st.warning("No hay productos finales cargados.")
+        st.warning("No hay productos finales.")
         st.stop()
 
     sel_f = st.selectbox("Producto Final a costear:", df_f['nombre'].tolist())
     row_actual = df_f[df_f['nombre'] == sel_f].iloc[0]
-    id_f = int(row_actual['id']) # ID del Producto Final (Jirafa, por ejemplo)
+    id_f = int(row_actual['id'])
 
     c1, c2 = st.columns([1, 2])
 
-    # --- COLUMNA 1: AÑADIR (Aquí pegamos la relación) ---
+    # --- COLUMNA 1: CARGA DIRECTA (SIN FORM PARA EVITAR LAG) ---
     with c1:
         st.subheader("Añadir insumo")
         if df_i is not None and not df_i.empty:
-            with st.form(key=f"form_add_receta_{id_f}", clear_on_submit=True):
-                nombre_insumo = st.selectbox("Insumo a agregar:", df_i['nombre'].tolist())
-                
-                # Buscamos los datos del insumo seleccionado
-                datos_insumo = df_i[df_i['nombre'] == nombre_insumo].iloc[0]
-                u_txt = str(datos_insumo['unidad']) if pd.notna(datos_insumo['unidad']) else "un"
-                
-                cant = st.number_input(f"Cantidad ({u_txt})", min_value=0.000, step=0.1, format="%.3f")
+            # Selector de insumo
+            insumo_nom = st.selectbox("Insumo:", df_i['nombre'].tolist(), key=f"sel_{id_f}")
+            det_i = df_i[df_i['nombre'] == insumo_nom].iloc[0]
+            
+            u_medida = str(det_i['unidad']) if pd.notna(det_i['unidad']) else "un"
+            cant_input = st.number_input(f"Cantidad ({u_medida})", min_value=0.0, step=0.1, format="%.3f", key=f"qty_{id_f}")
 
-                if st.form_submit_button("➕ Añadir"):
-                    if cant > 0:
-                        id_insumo = int(datos_insumo['id']) # ID del Insumo (Pabilo, etc.)
-                        
-                        # AQUÍ PEGAMOS LA RELACIÓN EXPLÍCITA
-                        # id_final (Jirafa) + id_insumo (Pabilo) + cantidad
-                        sql_insert = """
-                            INSERT INTO recetas (id_final, id_insumo, cantidad)
-                            VALUES (:idf, :idi, :c)
-                            ON CONFLICT (id_final, id_insumo)
-                            DO UPDATE SET cantidad = EXCLUDED.cantidad
-                        """
-                        
-                        # Ejecutamos el commit en Supabase
-                        db_query(sql_insert, {"idf": id_f, "idi": id_insumo, "c": cant}, commit=True)
-                        
-                        # LIMPIEZA ABSOLUTA: Borramos cache y forzamos reinicio del script
-                        st.cache_data.clear()
-                        st.success(f"✅ {nombre_insumo} vinculado a {sel_f}")
-                        st.rerun() 
-                    else:
-                        st.error("La cantidad debe ser mayor a 0")
+            if st.button("➕ Añadir a Receta", use_container_width=True):
+                if cant_input > 0:
+                    # Forzamos la relación ID_FINAL <-> ID_INSUMO
+                    params = {
+                        "idf": int(id_f),
+                        "idi": int(det_i['id']),
+                        "c": float(cant_input)
+                    }
+                    
+                    # Ejecución directa
+                    sql_add = """
+                        INSERT INTO recetas (id_final, id_insumo, cantidad) 
+                        VALUES (:idf, :idi, :c) 
+                        ON CONFLICT (id_final, id_insumo) 
+                        DO UPDATE SET cantidad = EXCLUDED.cantidad
+                    """
+                    db_query(sql_add, params, commit=True)
+                    
+                    # REFRESCO TOTAL
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error("La cantidad debe ser mayor a 0")
         else:
-            st.info("No hay insumos cargados.")
+            st.info("Sin insumos cargados.")
 
-    # --- COLUMNA 2: LISTADO Y CÁLCULO ---
+    # --- COLUMNA 2: LISTADO DINÁMICO ---
     with c2:
         st.subheader("Estructura de Costos")
         
-        # Esta es la query que "trae" la relación que acabamos de grabar
-        # Usamos LEFT JOIN para que no se "pierda" ningún item si falta algún dato
-        df_rec = db_query(
-            """SELECT r.id as receta_id, i.nombre, r.cantidad,
-                      COALESCE(i.unidad, 'un') as unidad,
-                      COALESCE(i.costo_u, 0) as costo_u,
-                      (r.cantidad * COALESCE(i.costo_u, 0)) as subtotal
-               FROM recetas r
-               LEFT JOIN productos i ON r.id_insumo = i.id
-               WHERE r.id_final = :id
-               ORDER BY i.nombre""",
-            {"id": id_f}
-        )
+        # Query con LEFT JOIN y COALESCE para asegurar que NADA se oculte
+        query_lista = """
+            SELECT 
+                r.id as rid, 
+                p.nombre as n, 
+                r.cantidad as c, 
+                COALESCE(p.unidad, 'un') as u, 
+                COALESCE(p.costo_u, 0) as cu,
+                (r.cantidad * COALESCE(p.costo_u, 0)) as sub
+            FROM recetas r
+            LEFT JOIN productos p ON r.id_insumo = p.id
+            WHERE r.id_final = :id_f
+            ORDER BY p.nombre
+        """
+        df_rec = db_query(query_lista, {"id_f": id_f})
 
-        costo_receta = 0.0
+        total_receta = 0.0
         if df_rec is not None and not df_rec.empty:
-            costo_receta = float(df_rec['subtotal'].sum())
-            st.metric("💰 Costo Total Calculado", f"$ {costo_receta:,.2f}")
+            total_receta = float(df_rec['sub'].sum())
+            st.metric("Costo Total Fabricación", f"$ {total_receta:,.2f}")
 
-            # Dibujamos la lista de la derecha
+            # Listado con botones de borrado
             for _, r in df_rec.iterrows():
-                cn, cc, cs, cb = st.columns([3, 1, 1, 0.5])
-                cn.write(f"**{r['nombre']}**")
-                cc.write(f"{r['cantidad']} {r['unidad']}")
-                cs.write(f"$ {r['subtotal']:,.2f}")
+                col_n, col_q, col_s, col_b = st.columns([3, 1.5, 1.5, 0.5])
+                col_n.write(f"**{r['n']}**")
+                col_q.write(f"{r['c']} {r['u']}")
+                col_s.write(f"$ {r['sub']:,.2f}")
                 
-                if cb.button("🗑️", key=f"del_{r['receta_id']}"):
-                    db_query("DELETE FROM recetas WHERE id = :id", {"id": int(r['receta_id'])}, commit=True)
+                if col_b.button("🗑️", key=f"del_{r['rid']}"):
+                    db_query("DELETE FROM recetas WHERE id = :id", {"id": int(r['rid'])}, commit=True)
                     st.cache_data.clear()
                     st.rerun()
 
             st.divider()
             
-            # --- FORMULARIO DE PRECIOS ---
-            st.subheader("📈 Precios y Márgenes")
-            with st.form("form_precios_inventario"):
-                c_l1, c_l2 = st.columns(2)
-                with c_l1:
-                    met1 = st.radio("Cálculo L1", ["Precio", "Porcentaje"], key="r1")
-                    val1 = st.number_input("Valor Lista 1", value=float(row_actual['precio_v']) if row_actual['precio_v'] else 0.0)
-                    p1 = val1 if met1=="Precio" else costo_receta * (1 + val1/100)
-                with c_l2:
-                    met2 = st.radio("Cálculo L2", ["Precio", "Porcentaje"], key="r2")
-                    val2 = st.number_input("Valor Lista 2", value=float(row_actual['precio_v2']) if row_actual['precio_v2'] else 0.0)
-                    p2 = val2 if met2=="Precio" else costo_receta * (1 + val2/100)
+            # --- SECCIÓN PRECIOS ---
+            st.subheader("📈 Precios")
+            with st.form("precios_finales"):
+                ca, cb = st.columns(2)
+                with ca:
+                    m1 = st.radio("Cálculo L1", ["Precio", "%"], horizontal=True)
+                    v1 = st.number_input("Valor L1", value=float(row_actual['precio_v']) if row_actual['precio_v'] else 0.0)
+                    p1 = v1 if m1 == "Precio" else total_receta * (1 + v1/100)
+                with cb:
+                    m2 = st.radio("Cálculo L2", ["Precio", "%"], horizontal=True)
+                    v2 = st.number_input("Valor L2", value=float(row_actual['precio_v2']) if row_actual['precio_v2'] else 0.0)
+                    p2 = v2 if m2 == "Precio" else total_receta * (1 + v2/100)
                 
-                st.write(f"Sugeridos: L1 **${p1:,.2f}** | L2 **${p2:,.2f}**")
-                
-                if st.form_submit_button("💾 ACTUALIZAR PRECIOS EN INVENTARIO"):
+                if st.form_submit_button("💾 GUARDAR PRECIOS"):
                     db_query(
                         "UPDATE productos SET costo_u = :c, precio_v = :p1, precio_v2 = :p2 WHERE id = :id",
-                        {"c": costo_receta, "p1": p1, "p2": p2, "id": id_f}, commit=True
+                        {"c": total_receta, "p1": p1, "p2": p2, "id": id_f}, commit=True
                     )
                     st.cache_data.clear()
-                    st.success("Sincronizado con Inventario.")
                     st.rerun()
         else:
-            st.info("La receta está vacía. Agregá insumos a la izquierda.")
+            st.info("No hay insumos vinculados a este producto.")
 
 # ==========================================
 # 🏭 3. FABRICACIÓN
