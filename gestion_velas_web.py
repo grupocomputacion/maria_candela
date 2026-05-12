@@ -202,41 +202,43 @@ elif menu == "🧪 Recetas y Costeo":
     c1, c2 = st.columns([1, 2])
 
     # --- COLUMNA 1: GRABACIÓN CON VERIFICACIÓN ---
+# --- COLUMNA 1: DIAGNÓSTICO DE GRABACIÓN ---
     with c1:
         st.subheader("Añadir insumo")
         if df_i is not None and not df_i.empty:
-            st.write(f"🏷️ **ID Producto Final:** {id_f_actual}")
+            st.write(f"🏷️ **ID Destino:** {id_f_actual}")
             
             ins_nombre = st.selectbox("Insumo:", df_i['nombre'].tolist(), key=f"ins_sel_{id_f_actual}")
             det_i = df_i[df_i['nombre'] == ins_nombre].iloc[0]
             
             u_txt = str(det_i['unidad']) if pd.notna(det_i['unidad']) else "un"
-            id_insumo_real = int(det_i['id'])
+            id_i_real = int(det_i['id'])
             cant_input = st.number_input(f"Cantidad ({u_txt})", min_value=0.0, step=0.1, format="%.3f", key=f"qty_val_{id_f_actual}")
 
-            if st.button("🚀 GUARDAR EN BASE DE DATOS", use_container_width=True, type="primary"):
+            if st.button("🚀 GRABAR AHORA", use_container_width=True, type="primary"):
                 if cant_input > 0:
+                    # PROBAMOS UN INSERT SIMPLE (Si falla, nos dará el error real de Postgres)
+                    # Eliminamos el ON CONFLICT temporalmente para ver si ese es el problema
+                    sql_test = "INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (:idf, :idi, :c)"
+                    
                     try:
-                        # Intentamos la grabación forzando tipos nativos
-                        res = db_query(
-                            "INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (:idf, :idi, :c) ON CONFLICT (id_final, id_insumo) DO UPDATE SET cantidad = EXCLUDED.cantidad",
-                            {"idf": int(id_f_actual), "idi": int(id_insumo_real), "c": float(cant_input)}, 
-                            commit=True
-                        )
+                        db_query(sql_test, {"idf": id_f_actual, "idi": id_i_real, "c": float(cant_input)}, commit=True)
                         
-                        # VERIFICACIÓN: ¿Realmente se guardó?
-                        check_db = db_query("SELECT id FROM recetas WHERE id_final = :f AND id_insumo = :i", {"f": id_f_actual, "i": id_insumo_real})
+                        # Verificamos si apareció
+                        check = db_query("SELECT id FROM recetas WHERE id_final = :f AND id_insumo = :i", {"f": id_f_actual, "i": id_i_real})
                         
-                        if check_db is not None and not check_db.empty:
-                            st.success(f"✅ CONFIRMADO: {ins_nombre} guardado.")
+                        if check is not None and not check.empty:
+                            st.success("✅ ¡POR FIN! Grabado correctamente.")
                             st.cache_data.clear()
                             st.rerun()
                         else:
-                            st.error("❌ ERROR: Supabase no persistió el dato. Verifique si la tabla 'recetas' tiene habilitados los permisos INSERT/UPDATE para su usuario.")
+                            # Si entra acá, el problema es el COMMIT de la base de datos
+                            st.error("❌ LA DB NO RESPONDE: El INSERT no devolvió error pero el dato no está. Revise en Supabase: Authentication -> Policies -> tabla 'recetas'.")
                     except Exception as e:
-                        st.error(f"❌ FALLO TÉCNICO: {e}")
+                        # Si el problema es una restricción de clave, acá saltará el mensaje real
+                        st.error(f"❌ ERROR REAL DE POSTGRES: {e}")
                 else:
-                    st.warning("La cantidad debe ser mayor a 0.")
+                    st.warning("Cantidad debe ser mayor a 0.")
 
     # --- COLUMNA 2: ESTRUCTURA Y CÁLCULOS (ESTABLE) ---
     with c2:
