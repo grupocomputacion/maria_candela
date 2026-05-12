@@ -182,67 +182,81 @@ if menu == "📦 Inventario y Alta":
         st.info("La base de datos de productos está vacía. Usá el expander de Restauración arriba.")
 
 # ==========================================
-# 🧪 2. RECETAS Y COSTEO (SOLUCIÓN DEFINITIVA)
+# 🧪 2. RECETAS Y COSTEO (VERSIÓN PROFESIONAL FINAL)
 # ==========================================
 elif menu == "🧪 Recetas y Costeo":
     st.header("🧪 Composición y Costeo")
 
-    # 1. CARGA DE MAESTROS
+    # 1. CARGA DE DATOS MAESTROS (Sin filtros previos)
     df_f = db_query("SELECT id, nombre, precio_v, precio_v2, costo_u FROM productos WHERE UPPER(tipo) = 'FINAL' ORDER BY nombre")
     df_i = db_query("SELECT id, nombre, unidad, costo_u FROM productos WHERE UPPER(tipo) = 'INSUMO' ORDER BY nombre")
 
     if df_f is None or df_f.empty:
-        st.warning("No hay productos finales cargados.")
+        st.warning("No hay productos finales cargados en Inventario.")
         st.stop()
 
-    sel_f = st.selectbox("Producto Final a costear:", df_f['nombre'].tolist())
+    # Selector de Producto Final (El "padre" de la receta)
+    sel_f = st.selectbox("Producto Final a costear:", df_f['nombre'].tolist(), key="main_f_selector")
     row_actual = df_f[df_f['nombre'] == sel_f].iloc[0]
-    id_f = int(row_actual['id'])
+    id_f_actual = int(row_actual['id'])
 
-    # --- FUNCIÓN DE CARGA (Para usar en on_click) ---
-    def agregar_insumo_callback(idf, idi, cantidad, nombre_ins):
-        if cantidad > 0:
+    # --- FUNCIÓN DE PROCESAMIENTO (Callback) ---
+    # Esta función asegura que el registro se grabe y el estado se limpie correctamente
+    def procesar_alta_receta():
+        # Recuperamos los valores directamente de lo que el usuario eligió
+        nombre_insumo = st.session_state.get(f"ins_sel_{id_f_actual}")
+        cantidad_valor = st.session_state.get(f"qty_in_{id_f_actual}")
+        
+        if cantidad_valor and cantidad_valor > 0:
+            # Buscamos el ID del insumo seleccionado
+            insumo_data = df_i[df_i['nombre'] == nombre_insumo].iloc[0]
+            id_i_actual = int(insumo_data['id'])
+            
+            # Ejecutamos el INSERT con la relación ID_FINAL + ID_INSUMO
             sql = """
                 INSERT INTO recetas (id_final, id_insumo, cantidad) 
                 VALUES (:idf, :idi, :c) 
                 ON CONFLICT (id_final, id_insumo) 
                 DO UPDATE SET cantidad = EXCLUDED.cantidad
             """
-            db_query(sql, {"idf": idf, "idi": idi, "c": cantidad}, commit=True)
+            db_query(sql, {"idf": id_f_actual, "idi": id_i_actual, "c": cantidad_valor}, commit=True)
+            
+            # Limpiamos caché para que la consulta de la derecha se refresque
             st.cache_data.clear()
-            # Al limpiar aquí, evitamos el error de StreamlitAPIException
-            if f"qty_{idf}" in st.session_state:
-                st.session_state[f"qty_{idf}"] = 0.0
+            # Reseteamos el campo de cantidad para que vuelva a 0
+            st.session_state[f"qty_in_{id_f_actual}"] = 0.0
         else:
-            st.error("Cantidad inválida.")
+            st.error("Por favor, ingrese una cantidad mayor a cero.")
 
     c1, c2 = st.columns([1, 2])
 
+    # --- COLUMNA 1: ENTRADA DE DATOS ---
     with c1:
         st.subheader("Añadir insumo")
+        # Mostramos el ID del producto final como pediste para confirmar la relación
+        st.caption(f"ID Producto Final: {id_f_actual}")
+        
         if df_i is not None and not df_i.empty:
-            insumo_nom = st.selectbox("Seleccione Insumo:", df_i['nombre'].tolist(), key=f"sel_i_{id_f}")
-            det_i = df_i[df_i['nombre'] == insumo_nom].iloc[0]
-            u_medida = str(det_i['unidad']) if pd.notna(det_i['unidad']) else "un"
+            # Selectbox con key única por producto final
+            ins_nom = st.selectbox("Insumo:", df_i['nombre'].tolist(), key=f"ins_sel_{id_f_actual}")
             
-            # El widget de cantidad
-            cant_input = st.number_input(f"Cantidad ({u_medida})", min_value=0.0, step=0.1, format="%.3f", key=f"qty_{id_f}")
+            # Buscamos unidad para el label
+            det_ins = df_i[df_i['nombre'] == ins_nom].iloc[0]
+            u_txt = str(det_ins['unidad']) if pd.notna(det_ins['unidad']) else "un"
+            
+            # Number input con key única para el callback
+            st.number_input(f"Cantidad ({u_txt})", min_value=0.0, step=0.1, format="%.3f", key=f"qty_in_{id_f_actual}")
 
-            # Botón con callback para procesar ANTES del renderizado
-            st.button(
-                "➕ Añadir a la Receta", 
-                on_click=agregar_insumo_callback, 
-                args=(int(id_f), int(det_i['id']), cant_input, insumo_nom),
-                use_container_width=True,
-                type="primary"
-            )
+            # Botón que dispara el proceso
+            st.button("➕ Añadir a Receta", on_click=procesar_alta_receta, use_container_width=True, type="primary")
         else:
-            st.info("Sin insumos cargados.")
+            st.info("Cargue insumos en la sección de Inventario.")
 
+    # --- COLUMNA 2: ESTRUCTURA Y CÁLCULOS ---
     with c2:
         st.subheader("Estructura de Costos")
         
-        # Query con LEFT JOIN para asegurar visualización total
+        # Query que levanta todos los items asociados al id_f_actual
         df_rec = db_query(
             """SELECT r.id as rid, p.nombre as n, r.cantidad as c, 
                       COALESCE(p.unidad, 'un') as u, 
@@ -252,48 +266,55 @@ elif menu == "🧪 Recetas y Costeo":
                LEFT JOIN productos p ON r.id_insumo = p.id
                WHERE r.id_final = :id_f
                ORDER BY p.nombre""", 
-            {"id_f": id_f}
+            {"id_f": id_f_actual}
         )
 
         costo_fab = 0.0
         if df_rec is not None and not df_rec.empty:
             costo_fab = float(df_rec['sub'].sum())
-            st.metric("💰 Costo Total Fabricación", f"$ {costo_fab:,.2f}")
+            st.metric("Costo Total de Fabricación", f"$ {costo_fab:,.2f}")
 
+            # Listado de componentes
             for _, r in df_rec.iterrows():
                 col_n, col_q, col_s, col_b = st.columns([3, 1.5, 1.5, 0.5])
                 col_n.write(f"**{r['n']}**")
                 col_q.write(f"{r['c']} {r['u']}")
                 col_s.write(f"$ {r['sub']:,.2f}")
                 
-                if col_b.button("🗑️", key=f"del_{r['rid']}"):
+                # Botón borrar individual
+                if col_b.button("🗑️", key=f"del_rec_{r['rid']}"):
                     db_query("DELETE FROM recetas WHERE id = :id", {"id": int(r['rid'])}, commit=True)
                     st.cache_data.clear()
                     st.rerun()
 
             st.divider()
-            st.subheader("📈 Precios")
             
-            with st.form("form_precios_sincro"):
+            # --- FORMULARIO DE ACTUALIZACIÓN DE PRECIOS ---
+            st.subheader("📈 Precios de Venta")
+            with st.form("form_sincro_precios"):
                 ca, cb = st.columns(2)
                 with ca:
-                    m1 = st.radio("Cálculo L1", ["Precio", "%"], horizontal=True, key="m1")
-                    v1 = st.number_input("Valor L1", value=float(row_actual['precio_v']) if row_actual['precio_v'] else 0.0, key="v1")
+                    m1 = st.radio("Cálculo L1", ["Precio", "%"], horizontal=True, key="m1_rad")
+                    v1 = st.number_input("Valor L1", value=float(row_actual['precio_v']) if row_actual['precio_v'] else 0.0, key="v1_val")
                     p1 = v1 if m1 == "Precio" else costo_fab * (1 + v1/100)
+                
                 with cb:
-                    m2 = st.radio("Cálculo L2", ["Precio", "%"], horizontal=True, key="m2")
-                    v2 = st.number_input("Valor L2", value=float(row_actual['precio_v2']) if row_actual['precio_v2'] else 0.0, key="v2")
+                    m2 = st.radio("Cálculo L2", ["Precio", "%"], horizontal=True, key="m2_rad")
+                    v2 = st.number_input("Valor L2", value=float(row_actual['precio_v2']) if row_actual['precio_v2'] else 0.0, key="v2_val")
                     p2 = v2 if m2 == "Precio" else costo_fab * (1 + v2/100)
+                
+                st.write(f"Sugeridos → L1: **${p1:,.2f}** | L2: **${p2:,.2f}**")
                 
                 if st.form_submit_button("💾 ACTUALIZAR EN INVENTARIO"):
                     db_query(
                         "UPDATE productos SET costo_u = :c, precio_v = :p1, precio_v2 = :p2 WHERE id = :id",
-                        {"c": costo_fab, "p1": p1, "p2": p2, "id": id_f}, commit=True
+                        {"c": costo_fab, "p1": p1, "p2": p2, "id": id_f_actual}, commit=True
                     )
                     st.cache_data.clear()
+                    st.success("✅ Precios e Inventario sincronizados.")
                     st.rerun()
         else:
-            st.info("La receta está vacía.")
+            st.info("No hay insumos cargados para este producto.")
 
 
 # ==========================================
