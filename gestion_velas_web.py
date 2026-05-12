@@ -204,24 +204,25 @@ elif menu == "🧪 Recetas y Costeo":
     with c1:
         st.subheader("Añadir insumo")
         if df_i is not None and not df_i.empty:
-            # Usamos una key única para el formulario basada en el producto final
-            with st.form(f"form_add_{id_f}", clear_on_submit=True):
+            # Creamos el formulario. El ID del producto final asegura que no se mezclen datos
+            with st.form(key=f"form_insumo_{id_f}", clear_on_submit=True):
                 sel_i_nombre = st.selectbox("Insumo:", df_i['nombre'].tolist())
                 
-                # BUSQUEDA SEGURA DE DATOS:
-                # Buscamos la fila del insumo seleccionado para obtener unidad e ID
+                # Buscamos los datos del insumo seleccionado
                 datos_i = df_i[df_i['nombre'] == sel_i_nombre].iloc[0]
                 
-                # Manejo de la unidad para evitar el "nan"
-                u_display = str(datos_i['unidad']) if pd.notna(datos_i['unidad']) else "un"
+                # EVITAR EL 'nan': Si la unidad es nula, ponemos 'un'
+                u_limpia = str(datos_i['unidad']) if pd.notna(datos_i['unidad']) else "un"
+                # EVITAR EL 'nan' en COSTO: Si el costo es nulo, avisamos
+                costo_i = float(datos_i['costo_u']) if pd.notna(datos_i['costo_u']) else 0.0
                 
-                cant = st.number_input(f"Cantidad ({u_display})", min_value=0.000, step=0.100, format="%.3f")
+                cant = st.number_input(f"Cantidad ({u_limpia})", min_value=0.000, step=0.100, format="%.3f")
 
                 if st.form_submit_button("➕ Añadir"):
-                    if cant > 0:
+                    if cant > 0 and costo_i > 0:
                         id_insumo_real = int(datos_i['id'])
                         
-                        # Ejecución del guardado
+                        # Grabamos en Neon
                         db_query(
                             "INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (:idf, :idi, :c) "
                             "ON CONFLICT (id_final, id_insumo) DO UPDATE SET cantidad = EXCLUDED.cantidad",
@@ -229,11 +230,13 @@ elif menu == "🧪 Recetas y Costeo":
                             commit=True
                         )
                         
-                        # Limpieza total de caché para forzar el recálculo del costo en c2
                         st.cache_data.clear()
+                        st.success(f"Agregado: {sel_i_nombre}")
                         st.rerun()
+                    elif costo_i == 0:
+                        st.error(f"El insumo {sel_i_nombre} tiene costo $0.00. Primero cargale un precio en Inventario.")
                     else:
-                        st.warning("Ingresá una cantidad mayor a 0.")
+                        st.warning("La cantidad debe ser mayor a 0.")
         else:
             st.info("No hay insumos cargados.")
     with c2:
