@@ -182,12 +182,12 @@ if menu == "📦 Inventario y Alta":
         st.info("La base de datos de productos está vacía. Usá el expander de Restauración arriba.")
 
 # ==========================================
-# 🧪 2. RECETAS Y COSTEO (SOLUCIÓN PROFESIONAL)
+# 🧪 2. RECETAS Y COSTEO (SOLUCIÓN DEFINITIVA Y SIN ERRORES)
 # ==========================================
 elif menu == "🧪 Recetas y Costeo":
     st.header("🧪 Composición y Costeo")
 
-    # 1. CARGA DE DATOS MAESTROS (Sin caché para evitar datos viejos)
+    # 1. CARGA DE PRODUCTOS (Sin caché para asegurar frescura)
     df_f = db_query("SELECT id, nombre, precio_v, precio_v2, costo_u FROM productos WHERE UPPER(tipo) = 'FINAL' ORDER BY nombre")
     df_i = db_query("SELECT id, nombre, unidad, costo_u FROM productos WHERE UPPER(tipo) = 'INSUMO' ORDER BY nombre")
 
@@ -195,55 +195,56 @@ elif menu == "🧪 Recetas y Costeo":
         st.warning("No hay productos finales cargados.")
         st.stop()
 
-    sel_f = st.selectbox("Producto Final a costear:", df_f['nombre'].tolist(), key="main_selector")
+    sel_f = st.selectbox("Producto Final a costear:", df_f['nombre'].tolist())
     row_actual = df_f[df_f['nombre'] == sel_f].iloc[0]
-    id_f = int(row_actual['id'])
+    id_f = int(row_actual['id']) # ID del Producto Final (Jirafa, por ejemplo)
 
     c1, c2 = st.columns([1, 2])
 
-    # --- COLUMNA 1: OPERACIÓN DE CARGA ---
+    # --- COLUMNA 1: AÑADIR (Aquí pegamos la relación) ---
     with c1:
         st.subheader("Añadir insumo")
         if df_i is not None and not df_i.empty:
-            # El secreto es usar un formulario que NO dependa de variables externas volátiles
-            with st.form(key=f"form_add_{id_f}", clear_on_submit=True):
-                insumo_nombre = st.selectbox("Insumo:", df_i['nombre'].tolist())
+            with st.form(key=f"form_add_receta_{id_f}", clear_on_submit=True):
+                nombre_insumo = st.selectbox("Insumo a agregar:", df_i['nombre'].tolist())
                 
-                # Buscamos la unidad solo para el label
-                u_temp = df_i[df_i['nombre'] == insumo_nombre]['unidad'].iloc[0]
-                u_txt = str(u_temp) if pd.notna(u_temp) else "un"
+                # Buscamos los datos del insumo seleccionado
+                datos_insumo = df_i[df_i['nombre'] == nombre_insumo].iloc[0]
+                u_txt = str(datos_insumo['unidad']) if pd.notna(datos_insumo['unidad']) else "un"
                 
-                cant = st.number_input(f"Cantidad ({u_txt})", min_value=0.0, step=0.1, format="%.3f")
+                cant = st.number_input(f"Cantidad ({u_txt})", min_value=0.000, step=0.1, format="%.3f")
 
-                if st.form_submit_button("➕ Añadir a la Receta"):
+                if st.form_submit_button("➕ Añadir"):
                     if cant > 0:
-                        # Buscamos el ID exacto del insumo dentro del submit
-                        insumo_id = int(df_i[df_i['nombre'] == insumo_nombre]['id'].iloc[0])
+                        id_insumo = int(datos_insumo['id']) # ID del Insumo (Pabilo, etc.)
                         
-                        # EXECUCIÓN ATÓMICA
-                        db_query(
-                            """INSERT INTO recetas (id_final, id_insumo, cantidad)
-                               VALUES (:idf, :idi, :c)
-                               ON CONFLICT (id_final, id_insumo)
-                               DO UPDATE SET cantidad = EXCLUDED.cantidad""",
-                            {"idf": id_f, "idi": insumo_id, "c": cant},
-                            commit=True
-                        )
+                        # AQUÍ PEGAMOS LA RELACIÓN EXPLÍCITA
+                        # id_final (Jirafa) + id_insumo (Pabilo) + cantidad
+                        sql_insert = """
+                            INSERT INTO recetas (id_final, id_insumo, cantidad)
+                            VALUES (:idf, :idi, :c)
+                            ON CONFLICT (id_final, id_insumo)
+                            DO UPDATE SET cantidad = EXCLUDED.cantidad
+                        """
                         
-                        # --- EL REMATE PROFESIONAL ---
-                        st.cache_data.clear() # Limpiamos memoria
-                        st.success(f"Cargado: {insumo_nombre}")
-                        st.rerun() # Forzamos recarga total
+                        # Ejecutamos el commit en Supabase
+                        db_query(sql_insert, {"idf": id_f, "idi": id_insumo, "c": cant}, commit=True)
+                        
+                        # LIMPIEZA ABSOLUTA: Borramos cache y forzamos reinicio del script
+                        st.cache_data.clear()
+                        st.success(f"✅ {nombre_insumo} vinculado a {sel_f}")
+                        st.rerun() 
                     else:
-                        st.error("La cantidad debe ser mayor a 0.")
+                        st.error("La cantidad debe ser mayor a 0")
         else:
-            st.info("Cargá insumos en Inventario primero.")
+            st.info("No hay insumos cargados.")
 
-    # --- COLUMNA 2: VISUALIZACIÓN Y CÁLCULOS TIEMPO REAL ---
+    # --- COLUMNA 2: LISTADO Y CÁLCULO ---
     with c2:
         st.subheader("Estructura de Costos")
         
-        # RE-EJECUTAMOS LA QUERY DE RECETA (Forzamos lectura de Supabase)
+        # Esta es la query que "trae" la relación que acabamos de grabar
+        # Usamos LEFT JOIN para que no se "pierda" ningún item si falta algún dato
         df_rec = db_query(
             """SELECT r.id as receta_id, i.nombre, r.cantidad,
                       COALESCE(i.unidad, 'un') as unidad,
@@ -256,61 +257,50 @@ elif menu == "🧪 Recetas y Costeo":
             {"id": id_f}
         )
 
-        costo_total_acumulado = 0.0
-        
+        costo_receta = 0.0
         if df_rec is not None and not df_rec.empty:
-            costo_total_acumulado = float(df_rec['subtotal'].sum())
-            
-            # KPI de Costo (Se actualiza con el rerun)
-            st.metric("💰 COSTO DE FABRICACIÓN", f"$ {costo_total_acumulado:,.2f}")
+            costo_receta = float(df_rec['subtotal'].sum())
+            st.metric("💰 Costo Total Calculado", f"$ {costo_receta:,.2f}")
 
-            # Listado Dinámico
+            # Dibujamos la lista de la derecha
             for _, r in df_rec.iterrows():
-                col_n, col_c, col_s, col_b = st.columns([3, 1, 1, 0.5])
-                col_n.write(f"**{r['nombre']}**")
-                col_c.write(f"{r['cantidad']} {r['unidad']}")
-                col_s.write(f"$ {r['subtotal']:,.2f}")
+                cn, cc, cs, cb = st.columns([3, 1, 1, 0.5])
+                cn.write(f"**{r['nombre']}**")
+                cc.write(f"{r['cantidad']} {r['unidad']}")
+                cs.write(f"$ {r['subtotal']:,.2f}")
                 
-                if col_b.button("🗑️", key=f"btn_del_{r['receta_id']}"):
+                if cb.button("🗑️", key=f"del_{r['receta_id']}"):
                     db_query("DELETE FROM recetas WHERE id = :id", {"id": int(r['receta_id'])}, commit=True)
                     st.cache_data.clear()
                     st.rerun()
 
             st.divider()
             
-            # --- SECCIÓN DE PRECIOS ---
-            st.subheader("📈 Margen y Precios")
-            p1_actual = float(row_actual['precio_v']) if row_actual['precio_v'] else 0.0
-            p2_actual = float(row_actual['precio_v2']) if row_actual['precio_v2'] else 0.0
-
-            with st.form("form_update_precios"):
-                col_l1, col_l2 = st.columns(2)
-                with col_l1:
-                    st.write("**Minorista (L1)**")
-                    met_1 = st.radio("Cálculo", ["Precio", "Porcentaje"], key="met1", horizontal=True)
-                    val_1 = st.number_input("Valor L1", value=p1_actual if met_1=="Precio" else 100.0)
-                    p1_final = val_1 if met_1=="Precio" else costo_total_acumulado * (1 + val_1/100)
+            # --- FORMULARIO DE PRECIOS ---
+            st.subheader("📈 Precios y Márgenes")
+            with st.form("form_precios_inventario"):
+                c_l1, c_l2 = st.columns(2)
+                with c_l1:
+                    met1 = st.radio("Cálculo L1", ["Precio", "Porcentaje"], key="r1")
+                    val1 = st.number_input("Valor Lista 1", value=float(row_actual['precio_v']) if row_actual['precio_v'] else 0.0)
+                    p1 = val1 if met1=="Precio" else costo_receta * (1 + val1/100)
+                with c_l2:
+                    met2 = st.radio("Cálculo L2", ["Precio", "Porcentaje"], key="r2")
+                    val2 = st.number_input("Valor Lista 2", value=float(row_actual['precio_v2']) if row_actual['precio_v2'] else 0.0)
+                    p2 = val2 if met2=="Precio" else costo_receta * (1 + val2/100)
                 
-                with col_l2:
-                    st.write("**Mayorista (L2)**")
-                    met_2 = st.radio("Cálculo", ["Precio", "Porcentaje"], key="met2", horizontal=True)
-                    val_2 = st.number_input("Valor L2", value=p2_actual if met_2=="Precio" else 60.0)
-                    p2_final = val_2 if met_2=="Precio" else costo_total_acumulado * (1 + val_2/100)
-
-                st.write(f"Sugeridos: L1 **${p1_final:,.2f}** | L2 **${p2_final:,.2f}**")
+                st.write(f"Sugeridos: L1 **${p1:,.2f}** | L2 **${p2:,.2f}**")
                 
                 if st.form_submit_button("💾 ACTUALIZAR PRECIOS EN INVENTARIO"):
                     db_query(
                         "UPDATE productos SET costo_u = :c, precio_v = :p1, precio_v2 = :p2 WHERE id = :id",
-                        {"c": costo_total_acumulado, "p1": p1_final, "p2": p2_final, "id": id_f},
-                        commit=True
+                        {"c": costo_receta, "p1": p1, "p2": p2, "id": id_f}, commit=True
                     )
                     st.cache_data.clear()
-                    st.success("Precios e Inventario sincronizados.")
+                    st.success("Sincronizado con Inventario.")
                     st.rerun()
         else:
-            st.info("La receta está vacía. Añadí insumos para ver el costeo.")
-
+            st.info("La receta está vacía. Agregá insumos a la izquierda.")
 
 # ==========================================
 # 🏭 3. FABRICACIÓN
