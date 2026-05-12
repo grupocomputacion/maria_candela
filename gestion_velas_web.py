@@ -182,12 +182,12 @@ if menu == "📦 Inventario y Alta":
         st.info("La base de datos de productos está vacía. Usá el expander de Restauración arriba.")
 
 # ==========================================
-# 🧪 2. RECETAS Y COSTEO (SOLUCIÓN FINAL Y COMPLETA)
+# 🧪 2. RECETAS Y COSTEO (CONEXIÓN DIRECTA)
 # ==========================================
 elif menu == "🧪 Recetas y Costeo":
     st.header("🧪 Composición y Costeo")
 
-    # 1. CARGA DE DATOS (Sin caché para evitar datos viejos)
+    # 1. CARGA DE MAESTROS (Para el selector)
     df_f = db_query("SELECT id, nombre, precio_v, precio_v2, costo_u FROM productos WHERE UPPER(tipo) = 'FINAL' ORDER BY nombre")
     df_i = db_query("SELECT id, nombre, unidad, costo_u FROM productos WHERE UPPER(tipo) = 'INSUMO' ORDER BY nombre")
 
@@ -195,96 +195,62 @@ elif menu == "🧪 Recetas y Costeo":
         st.warning("No hay productos finales cargados.")
         st.stop()
 
-    sel_f = st.selectbox("Producto Final a costear:", df_f['nombre'].tolist(), key="main_f_selector")
+    sel_f = st.selectbox("Producto Final a costear:", df_f['nombre'].tolist(), key="selector_maestro")
     row_actual = df_f[df_f['nombre'] == sel_f].iloc[0]
     id_f_actual = int(row_actual['id'])
 
-    # --- FUNCIÓN CALLBACK PARA AÑADIR (Lógica blindada) ---
-    def procesar_alta_receta():
-        nombre_insumo = st.session_state.get(f"ins_sel_{id_f_actual}")
-        cantidad_valor = st.session_state.get(f"qty_in_{id_f_actual}")
-        
-        if cantidad_valor and cantidad_valor > 0:
-            try:
-                # Buscamos los datos del insumo seleccionado directamente del DF
-                insumo_data = df_i[df_i['nombre'] == nombre_insumo].iloc[0]
-                id_i_real = int(insumo_data['id'])
-                
-                sql = """
-                    INSERT INTO recetas (id_final, id_insumo, cantidad) 
-                    VALUES (:idf, :idi, :c) 
-                    ON CONFLICT (id_final, id_insumo) 
-                    DO UPDATE SET cantidad = EXCLUDED.cantidad
-                """
-                # Ejecutamos el commit en Supabase
-                db_query(sql, {"idf": id_f_actual, "idi": id_i_real, "c": cantidad_valor}, commit=True)
-                
-                # LIMPIEZA ABSOLUTA
-                st.cache_data.clear()
-                st.session_state["mensaje_grabado"] = f"✅ GRABADO: {nombre_insumo} ({cantidad_valor})"
-                st.session_state[f"qty_in_{id_f_actual}"] = 0.0
-            except Exception as e:
-                st.session_state["mensaje_grabado"] = f"❌ ERROR DB: {str(e)}"
-        else:
-            st.session_state["mensaje_grabado"] = "⚠️ Cantidad inválida"
-
     c1, c2 = st.columns([1, 2])
 
-
+    # --- COLUMNA 1: GRABACIÓN DIRECTA ---
     with c1:
         st.subheader("Añadir insumo")
-        st.info(f"ID Producto Destino: {id_f_actual}")
+        st.code(f"ID Producto Destino: {id_f_actual}")
         
         if df_i is not None and not df_i.empty:
-            # 1. Elección de Insumo
-            ins_nom = st.selectbox("Seleccione Insumo:", df_i['nombre'].tolist(), key=f"sel_ins_{id_f_actual}")
+            ins_nom = st.selectbox("Seleccione Insumo:", df_i['nombre'].tolist(), key=f"ins_box_{id_f_actual}")
+            det_i = df_i[df_i['nombre'] == ins_nom].iloc[0]
+            u_medida = str(det_i['unidad']) if pd.notna(det_i['unidad']) else "un"
             
-            # 2. Obtención inmediata de datos del insumo seleccionado
-            ins_match = df_i[df_i['nombre'] == ins_nom].iloc[0]
-            id_i_real = int(ins_match['id'])
-            u_medida = str(ins_match['unit']) if 'unit' in ins_match else "un" # Ajuste según nombre real de columna
-            
-            # 3. Input de cantidad
             cant_in = st.number_input(f"Cantidad ({u_medida})", min_value=0.0, step=0.1, format="%.3f", key=f"qty_val_{id_f_actual}")
 
-            # 4. BOTÓN CON LÓGICA DE VALIDACIÓN REAL
-            if st.button("➕ GRABAR EN BASE DE DATOS", use_container_width=True, type="primary"):
+            if st.button("➕ GRABAR AHORA", use_container_width=True, type="primary"):
                 if cant_in > 0:
-                    # Preparamos la consulta
-                    sql_insert = """
-                        INSERT INTO recetas (id_final, id_insumo, cantidad) 
-                        VALUES (:idf, :idi, :c) 
-                        ON CONFLICT (id_final, id_insumo) 
-                        DO UPDATE SET cantidad = EXCLUDED.cantidad
-                    """
-                    params = {"idf": id_f_actual, "idi": id_i_real, "c": cant_in}
-                    
-                    # Intentamos la grabación
-                    resultado = db_query(sql_insert, params, commit=True)
-                    
-                    # Verificamos si la función db_query devolvió algo que indique error
-                    if resultado is not None and "error" in str(resultado).lower():
-                        st.error(f"Fallo de base de datos: {resultado}")
-                    else:
-                        # Si llegamos acá, forzamos limpieza y aviso
-                        st.cache_data.clear()
-                        st.success(f"CONFIRMADO: {ins_nom} guardado con ID {id_i_real}")
-                        # Pequeño delay y rerun para que la Columna 2 se entere
-                        st.rerun()
+                    # USAMOS CONEXIÓN DIRECTA PARA EVITAR FALLOS DE DB_QUERY
+                    conn = conectar() 
+                    if conn:
+                        try:
+                            with conn.cursor() as cur:
+                                sql = """
+                                    INSERT INTO recetas (id_final, id_insumo, cantidad) 
+                                    VALUES (%s, %s, %s) 
+                                    ON CONFLICT (id_final, id_insumo) 
+                                    DO UPDATE SET cantidad = EXCLUDED.cantidad
+                                """
+                                # Ejecución con parámetros posicionales (%s) que es más seguro en Postgres
+                                cur.execute(sql, (id_f_actual, int(det_i['id']), cant_in))
+                                conn.commit() # ¡ESTO ES LO MÁS IMPORTANTE!
+                                
+                                st.success(f"✅ ¡EXITO! Grabado en Supabase: {ins_nom}")
+                                st.cache_data.clear()
+                                st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ ERROR AL GRABAR: {e}")
+                        finally:
+                            conn.close()
                 else:
-                    st.warning("La cantidad debe ser mayor a 0 para grabar.")
+                    st.warning("La cantidad debe ser mayor a 0.")
         else:
-            st.error("No se detectan insumos en la tabla productos.")
+            st.info("Sin insumos cargados.")
 
+    # --- COLUMNA 2: ESTRUCTURA DE COSTOS ---
     with c2:
         st.subheader("Estructura de Costos")
         
-        # Botón de Sincronización Manual
-        if st.button("🔄 Sincronizar y Recalcular Lista", use_container_width=True):
+        if st.button("🔄 Refrescar Lista"):
             st.cache_data.clear()
             st.rerun()
 
-        # Query de visualización (LEFT JOIN para no ocultar nada)
+        # Query de visualización
         df_rec = db_query(
             """SELECT r.id as rid, p.nombre as n, r.cantidad as c, 
                       COALESCE(p.unidad, 'un') as u, 
@@ -297,49 +263,55 @@ elif menu == "🧪 Recetas y Costeo":
             {"id_f": id_f_actual}
         )
 
-        costo_fab = 0.0
+        costo_total = 0.0
         if df_rec is not None and not df_rec.empty:
-            costo_fab = float(df_rec['sub'].sum())
-            st.metric("Costo Total de Fabricación", f"$ {costo_fab:,.2f}")
+            costo_total = float(df_rec['sub'].sum())
+            st.metric("Costo de Fabricación", f"$ {costo_total:,.2f}")
 
             for _, r in df_rec.iterrows():
-                col_n, col_q, col_s, col_b = st.columns([3, 1.5, 1.5, 0.5])
-                col_n.write(f"**{r['n']}**")
-                col_q.write(f"{r['c']} {r['u']}")
-                col_s.write(f"$ {r['sub']:,.2f}")
+                cn, cq, cs, cb = st.columns([3, 1.5, 1.5, 0.5])
+                cn.write(f"**{r['n']}**")
+                cq.write(f"{r['c']} {r['u']}")
+                cs.write(f"$ {r['sub']:,.2f}")
                 
-                if col_b.button("🗑️", key=f"del_rec_{r['rid']}"):
-                    db_query("DELETE FROM recetas WHERE id = :id", {"id": int(r['rid'])}, commit=True)
+                if cb.button("🗑️", key=f"del_{r['rid']}"):
+                    conn_del = conectar()
+                    with conn_del.cursor() as cur_del:
+                        cur_del.execute("DELETE FROM recetas WHERE id = %s", (int(r['rid']),))
+                        conn_del.commit()
+                    conn_del.close()
                     st.cache_data.clear()
                     st.rerun()
 
             st.divider()
             
-            # --- RECUPERADO: FORMULARIO DE PRECIOS ---
-            st.subheader("📈 Precios de Venta")
-            with st.form("form_sincro_final_precios"):
-                ca, cb = st.columns(2)
-                with ca:
-                    m1 = st.radio("Cálculo L1", ["Precio", "%"], horizontal=True, key="m1_r")
-                    v1 = st.number_input("Valor L1", value=float(row_actual['precio_v']) if row_actual['precio_v'] else 0.0, key="v1_r")
-                    p1 = v1 if m1 == "Precio" else costo_fab * (1 + v1/100)
-                with cb:
-                    m2 = st.radio("Cálculo L2", ["Precio", "%"], horizontal=True, key="m2_r")
-                    v2 = st.number_input("Valor L2", value=float(row_actual['precio_v2']) if row_actual['precio_v2'] else 0.0, key="v2_r")
-                    p2 = v2 if m2 == "Precio" else costo_fab * (1 + v2/100)
+            # --- SECCIÓN PRECIOS ---
+            st.subheader("📈 Precios")
+            with st.form("precios_vta"):
+                c_l1, c_l2 = st.columns(2)
+                with c_l1:
+                    met1 = st.radio("L1", ["Precio", "%"], key="r1", horizontal=True)
+                    val1 = st.number_input("Valor L1", value=float(row_actual['precio_v']) if row_actual['precio_v'] else 0.0)
+                    p1 = val1 if met1=="Precio" else costo_total * (1 + val1/100)
+                with c_l2:
+                    met2 = st.radio("L2", ["Precio", "%"], key="r2", horizontal=True)
+                    val2 = st.number_input("Valor L2", value=float(row_actual['precio_v2']) if row_actual['precio_v2'] else 0.0)
+                    p2 = val2 if met2=="Precio" else costo_total * (1 + val2/100)
                 
-                st.write(f"Sugeridos → L1: **${p1:,.2f}** | L2: **${p2:,.2f}**")
-                
-                if st.form_submit_button("💾 GRABAR PRECIOS EN INVENTARIO"):
-                    db_query(
-                        "UPDATE productos SET costo_u = :c, precio_v = :p1, precio_v2 = :p2 WHERE id = :id",
-                        {"c": costo_fab, "p1": p1, "p2": p2, "id": id_f_actual}, commit=True
-                    )
+                if st.form_submit_button("💾 ACTUALIZAR PRECIOS"):
+                    conn_upd = conectar()
+                    with conn_upd.cursor() as cur_upd:
+                        cur_upd.execute(
+                            "UPDATE productos SET costo_u = %s, precio_v = %s, precio_v2 = %s WHERE id = %s",
+                            (costo_total, p1, p2, id_f_actual)
+                        )
+                        conn_upd.commit()
+                    conn_upd.close()
                     st.cache_data.clear()
-                    st.success("✅ Precios e Inventario actualizados.")
                     st.rerun()
         else:
-            st.info("La receta está vacía para este producto.")
+            st.info(f"La receta del producto ID {id_f_actual} está vacía.")
+
 
 # ==========================================
 # 🏭 3. FABRICACIÓN
