@@ -205,19 +205,30 @@ elif menu == "🧪 Recetas y Costeo":
         st.subheader("Añadir insumo")
         if df_i is not None and not df_i.empty:
             with st.form("form_add_insumo"):
-                sel_i = st.selectbox("Insumo:", df_i['nombre'].tolist())
-                row_i = df_i[df_i['nombre'] == sel_i].iloc[0]
-                cant = st.number_input(f"Cantidad ({row_i['unidad']})", min_value=0.001, format="%.3f")
+                # 1. Definimos los widgets
+                nombre_insumo = st.selectbox("Insumo:", df_i['nombre'].tolist())
+                
+                # Necesitamos mostrar la unidad, así que buscamos la fila solo para la etiqueta
+                # pero no para el ID definitivo todavía
+                unidad_display = df_i[df_i['nombre'] == nombre_insumo]['unidad'].iloc[0]
+                cant = st.number_input(f"Cantidad ({unidad_display})", min_value=0.001, format="%.3f")
+
+                # 2. Procesamos la lógica SOLO al hacer clic
                 if st.form_submit_button("➕ Añadir"):
+                    # Buscamos el ID real en el momento del envío
+                    row_seleccionada = df_i[df_i['nombre'] == nombre_insumo].iloc[0]
+                    id_insumo_real = int(row_seleccionada['id'])
+                    
                     db_query(
-                        "INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (:idf, :idi, :c) ON CONFLICT (id_final, id_insumo) DO UPDATE SET cantidad = EXCLUDED.cantidad",
-                        {"idf": id_f, "idi": int(row_i['id']), "c": cant}, commit=True
+                        "INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (:idf, :idi, :c) "
+                        "ON CONFLICT (id_final, id_insumo) DO UPDATE SET cantidad = EXCLUDED.cantidad",
+                        {"idf": id_f, "idi": id_insumo_real, "c": cant}, 
+                        commit=True
                     )
                     st.cache_data.clear()
                     st.rerun()
         else:
             st.info("Sin insumos cargados.")
-
     with c2:
         st.subheader("Estructura de Costos")
         df_rec = db_query(
