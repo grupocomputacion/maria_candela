@@ -182,11 +182,12 @@ if menu == "📦 Inventario y Alta":
         st.info("La base de datos de productos está vacía. Usá el expander de Restauración arriba.")
 
 # ==========================================
-# 🧪 2. RECETAS Y COSTEO (SANEADO)
+# 🧪 2. RECETAS Y COSTEO (VERSIÓN CORREGIDA)
 # ==========================================
 elif menu == "🧪 Recetas y Costeo":
     st.header("🧪 Composición y Costeo")
 
+    # Forzamos la limpieza de cache si venimos de otra pestaña para asegurar datos frescos
     df_f = db_query("SELECT id, nombre, precio_v, precio_v2, costo_u FROM productos WHERE UPPER(tipo) = 'FINAL' ORDER BY nombre")
     df_i = db_query("SELECT id, nombre, unidad, costo_u FROM productos WHERE UPPER(tipo) = 'INSUMO' ORDER BY nombre")
 
@@ -203,34 +204,33 @@ elif menu == "🧪 Recetas y Costeo":
     with c1:
         st.subheader("Añadir insumo")
         if df_i is not None and not df_i.empty:
-
-            # ✅ El selectbox FUERA del form → reactivo, unidad correcta
-            nombre_i = st.selectbox("Insumo:", df_i['nombre'].tolist(), key="sel_insumo")
-            row_i    = df_i[df_i['nombre'] == nombre_i].iloc[0]
-            u_txt    = str(row_i['unidad']) if pd.notna(row_i['unidad']) else "un"
+            # Selector reactivo para mostrar la unidad correcta
+            nombre_i = st.selectbox("Seleccione Insumo:", df_i['nombre'].tolist(), key="insumo_selector")
+            
+            # Buscamos los datos del insumo ANTES del form para la etiqueta
+            info_insumo = df_i[df_i['nombre'] == nombre_i].iloc[0]
+            u_txt = str(info_insumo['unidad']) if pd.notna(info_insumo['unidad']) else "un"
 
             with st.form(key="form_nuevo_insumo", clear_on_submit=True):
-                cant = st.number_input(
-                    f"Cantidad ({u_txt})",
-                    min_value=0.0, step=0.1, format="%.3f"
-                )
+                cant = st.number_input(f"Cantidad a agregar ({u_txt})", min_value=0.0, step=0.1, format="%.3f")
 
                 if st.form_submit_button("➕ Añadir"):
                     if cant > 0:
-                        # ✅ Leemos row_i desde session_state del selectbox externo
-                        insumo_id = int(
-                            df_i[df_i['nombre'] == st.session_state["sel_insumo"]]['id'].iloc[0]
-                        )
-                        db_query(
-                            """INSERT INTO recetas (id_final, id_insumo, cantidad)
-                               VALUES (:idf, :idi, :c)
-                               ON CONFLICT (id_final, id_insumo)
-                               DO UPDATE SET cantidad = EXCLUDED.cantidad""",
-                            {"idf": id_f, "idi": insumo_id, "c": cant},
-                            commit=True
-                        )
-                        st.cache_data.clear()   # ✅ Primero limpiar cache
-                        st.rerun()              # ✅ Luego rerun
+                        # Buscamos el ID exacto del insumo seleccionado en el momento del submit
+                        # Esto asegura que no use un ID viejo o nulo
+                        target_id = int(df_i[df_i['nombre'] == st.session_state["insumo_selector"]]['id'].iloc[0])
+                        
+                        query_add = """
+                            INSERT INTO recetas (id_final, id_insumo, cantidad)
+                            VALUES (:idf, :idi, :c)
+                            ON CONFLICT (id_final, id_insumo)
+                            DO UPDATE SET cantidad = EXCLUDED.cantidad
+                        """
+                        db_query(query_add, {"idf": id_f, "idi": target_id, "c": cant}, commit=True)
+                        
+                        st.cache_data.clear() # Limpia todo el cache de la app
+                        st.success("✅ Insumo añadido.")
+                        st.rerun() # Refresca para que C2 lea la DB de nuevo
                     else:
                         st.warning("La cantidad debe ser mayor a 0.")
         else:
@@ -238,6 +238,7 @@ elif menu == "🧪 Recetas y Costeo":
 
     with c2:
         st.subheader("Estructura de Costos")
+        # Usamos LEFT JOIN para que si falta el costo en productos, el item igual aparezca (con 0)
         df_rec = db_query(
             """SELECT r.id as receta_id, i.nombre, r.cantidad,
                       COALESCE(i.unidad, 'un') as unidad,
@@ -257,21 +258,20 @@ elif menu == "🧪 Recetas y Costeo":
 
             for _, r in df_rec.iterrows():
                 cn, cc, cs, cb = st.columns([3, 1, 1, 0.5])
-                cn.write(r['nombre'])
+                cn.write(f"**{r['nombre']}**")
                 cc.write(f"{r['cantidad']} {r['unidad']}")
                 cs.write(f"$ {r['subtotal']:,.2f}")
-                if cb.button("🗑️", key=f"del_{r['receta_id']}"):
-                    db_query(
-                        "DELETE FROM recetas WHERE id = :id",
-                        {"id": int(r['receta_id'])}, commit=True
-                    )
+                
+                # Key única por receta para evitar conflictos de botones
+                if cb.button("🗑️", key=f"del_{r['receta_id']}_{id_f}"):
+                    db_query("DELETE FROM recetas WHERE id = :id", {"id": int(r['receta_id'])}, commit=True)
                     st.cache_data.clear()
                     st.rerun()
 
             st.divider()
             st.subheader("📈 Precios de Venta")
 
-            p1_base = float(row_actual['precio_v'])  if row_actual['precio_v']  else 0.0
+            p1_base = float(row_actual['precio_v']) if row_actual['precio_v'] else 0.0
             p2_base = float(row_actual['precio_v2']) if row_actual['precio_v2'] else 0.0
 
             with st.form("form_precios_final"):
@@ -282,8 +282,8 @@ elif menu == "🧪 Recetas y Costeo":
                     if metodo1 == "Precio":
                         p1_f = st.number_input("Precio L1 ($)", value=p1_base, key="input_p1")
                     else:
-                        margen1 = st.number_input("Margen L1 (%)", value=100.0, key="input_m1")
-                        p1_f = costo_receta * (1 + margen1 / 100)
+                        m1 = st.number_input("Margen L1 (%)", value=100.0, key="input_m1")
+                        p1_f = costo_receta * (1 + m1 / 100)
 
                 with col_b:
                     st.markdown("**Lista 2 (Mayorista)**")
@@ -291,8 +291,8 @@ elif menu == "🧪 Recetas y Costeo":
                     if metodo2 == "Precio":
                         p2_f = st.number_input("Precio L2 ($)", value=p2_base, key="input_p2")
                     else:
-                        margen2 = st.number_input("Margen L2 (%)", value=60.0, key="input_m2")
-                        p2_f = costo_receta * (1 + margen2 / 100)
+                        m2 = st.number_input("Margen L2 (%)", value=60.0, key="input_m2")
+                        p2_f = costo_receta * (1 + m2 / 100)
 
                 st.write(f"Sugeridos → L1: **${p1_f:,.2f}** | L2: **${p2_f:,.2f}**")
 
@@ -303,10 +303,10 @@ elif menu == "🧪 Recetas y Costeo":
                         commit=True
                     )
                     st.cache_data.clear()
-                    st.success("✅ Precios actualizados.")
+                    st.success("✅ Precios actualizados en Inventario.")
                     st.rerun()
         else:
-            st.info("Agregá insumos a la izquierda.")
+            st.info("Aún no hay insumos cargados para esta receta.")
 
 
 # ==========================================
