@@ -187,7 +187,6 @@ if menu == "📦 Inventario y Alta":
 elif menu == "🧪 Recetas y Costeo":
     st.header("🧪 Composición y Costeo")
 
-    # 1. CARGA DE DATOS
     df_f = db_query("SELECT id, nombre, precio_v, precio_v2, costo_u FROM productos WHERE UPPER(tipo) = 'FINAL' ORDER BY nombre")
     df_i = db_query("SELECT id, nombre, unidad, costo_u FROM productos WHERE UPPER(tipo) = 'INSUMO' ORDER BY nombre")
 
@@ -201,42 +200,56 @@ elif menu == "🧪 Recetas y Costeo":
 
     c1, c2 = st.columns([1, 2])
 
-    # --- COLUMNA 1: AÑADIR ---
     with c1:
         st.subheader("Añadir insumo")
         if df_i is not None and not df_i.empty:
-            # Quitamos el key dinámico del form que a veces marea a Streamlit
-            with st.form(key="form_nuevo_insumo", clear_on_submit=True):
-                nombre_i = st.selectbox("Insumo:", df_i['nombre'].tolist())
-                # Buscamos la unidad para que no diga 'nan'
-                unidad_i = df_i[df_i['nombre'] == nombre_i]['unidad'].iloc[0]
-                u_txt = str(unidad_i) if pd.notna(unidad_i) else "un"
-                
-                cant = st.number_input(f"Cantidad ({u_txt})", min_value=0.0, step=0.1, format="%.3f")
-                
-                if st.form_submit_button("➕ Añadir"):
-                    row_i = df_i[df_i['nombre'] == nombre_i].iloc[0]
-                    if cant > 0:
-                        db_query(
-                            "INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (:idf, :idi, :c) ON CONFLICT (id_final, id_insumo) DO UPDATE SET cantidad = EXCLUDED.cantidad",
-                            {"idf": id_f, "idi": int(row_i['id']), "c": cant}, commit=True
-                        )
-                        st.cache_data.clear()
-                        st.rerun()
-        else:
-            st.info("Sin insumos.")
 
-    # --- COLUMNA 2: COSTOS Y PRECIOS ---
+            # ✅ El selectbox FUERA del form → reactivo, unidad correcta
+            nombre_i = st.selectbox("Insumo:", df_i['nombre'].tolist(), key="sel_insumo")
+            row_i    = df_i[df_i['nombre'] == nombre_i].iloc[0]
+            u_txt    = str(row_i['unidad']) if pd.notna(row_i['unidad']) else "un"
+
+            with st.form(key="form_nuevo_insumo", clear_on_submit=True):
+                cant = st.number_input(
+                    f"Cantidad ({u_txt})",
+                    min_value=0.0, step=0.1, format="%.3f"
+                )
+
+                if st.form_submit_button("➕ Añadir"):
+                    if cant > 0:
+                        # ✅ Leemos row_i desde session_state del selectbox externo
+                        insumo_id = int(
+                            df_i[df_i['nombre'] == st.session_state["sel_insumo"]]['id'].iloc[0]
+                        )
+                        db_query(
+                            """INSERT INTO recetas (id_final, id_insumo, cantidad)
+                               VALUES (:idf, :idi, :c)
+                               ON CONFLICT (id_final, id_insumo)
+                               DO UPDATE SET cantidad = EXCLUDED.cantidad""",
+                            {"idf": id_f, "idi": insumo_id, "c": cant},
+                            commit=True
+                        )
+                        st.cache_data.clear()   # ✅ Primero limpiar cache
+                        st.rerun()              # ✅ Luego rerun
+                    else:
+                        st.warning("La cantidad debe ser mayor a 0.")
+        else:
+            st.info("Sin insumos cargados.")
+
     with c2:
         st.subheader("Estructura de Costos")
-        # LEFT JOIN para que aparezca aunque el insumo tenga datos incompletos
         df_rec = db_query(
-            """SELECT r.id as receta_id, i.nombre, r.cantidad, COALESCE(i.unidad, 'un') as unidad, 
-               COALESCE(i.costo_u, 0) as costo_u, (r.cantidad * COALESCE(i.costo_u, 0)) as subtotal
-               FROM recetas r LEFT JOIN productos i ON r.id_insumo = i.id
-               WHERE r.id_final = :id ORDER BY i.nombre""", {"id": id_f}
+            """SELECT r.id as receta_id, i.nombre, r.cantidad,
+                      COALESCE(i.unidad, 'un') as unidad,
+                      COALESCE(i.costo_u, 0) as costo_u,
+                      (r.cantidad * COALESCE(i.costo_u, 0)) as subtotal
+               FROM recetas r
+               LEFT JOIN productos i ON r.id_insumo = i.id
+               WHERE r.id_final = :id
+               ORDER BY i.nombre""",
+            {"id": id_f}
         )
-        
+
         costo_receta = 0.0
         if df_rec is not None and not df_rec.empty:
             costo_receta = float(df_rec['subtotal'].sum())
@@ -248,17 +261,19 @@ elif menu == "🧪 Recetas y Costeo":
                 cc.write(f"{r['cantidad']} {r['unidad']}")
                 cs.write(f"$ {r['subtotal']:,.2f}")
                 if cb.button("🗑️", key=f"del_{r['receta_id']}"):
-                    db_query("DELETE FROM recetas WHERE id = :id", {"id": int(r['receta_id'])}, commit=True)
+                    db_query(
+                        "DELETE FROM recetas WHERE id = :id",
+                        {"id": int(r['receta_id'])}, commit=True
+                    )
                     st.cache_data.clear()
                     st.rerun()
 
             st.divider()
             st.subheader("📈 Precios de Venta")
-            
-            p1_base = float(row_actual['precio_v']) if row_actual['precio_v'] else 0.0
+
+            p1_base = float(row_actual['precio_v'])  if row_actual['precio_v']  else 0.0
             p2_base = float(row_actual['precio_v2']) if row_actual['precio_v2'] else 0.0
 
-            # FORMULARIO ÚNICO PARA AMBOS PRECIOS (Evita el Duplicate ID error)
             with st.form("form_precios_final"):
                 col_a, col_b = st.columns(2)
                 with col_a:
@@ -269,7 +284,7 @@ elif menu == "🧪 Recetas y Costeo":
                     else:
                         margen1 = st.number_input("Margen L1 (%)", value=100.0, key="input_m1")
                         p1_f = costo_receta * (1 + margen1 / 100)
-                    
+
                 with col_b:
                     st.markdown("**Lista 2 (Mayorista)**")
                     metodo2 = st.radio("Cálculo L2", ["Precio", "Porcentaje"], key="m2")
@@ -278,16 +293,17 @@ elif menu == "🧪 Recetas y Costeo":
                     else:
                         margen2 = st.number_input("Margen L2 (%)", value=60.0, key="input_m2")
                         p2_f = costo_receta * (1 + margen2 / 100)
-                
-                st.write(f"Sugeridos: L1: ${p1_f:,.2f} | L2: ${p2_f:,.2f}")
-                
+
+                st.write(f"Sugeridos → L1: **${p1_f:,.2f}** | L2: **${p2_f:,.2f}**")
+
                 if st.form_submit_button("💾 GRABAR PRECIOS EN INVENTARIO"):
                     db_query(
                         "UPDATE productos SET costo_u = :c, precio_v = :p1, precio_v2 = :p2 WHERE id = :id",
-                        {"c": costo_receta, "p1": p1_f, "p2": p2_f, "id": id_f}, commit=True
+                        {"c": costo_receta, "p1": p1_f, "p2": p2_f, "id": id_f},
+                        commit=True
                     )
                     st.cache_data.clear()
-                    st.success("Precios actualizados.")
+                    st.success("✅ Precios actualizados.")
                     st.rerun()
         else:
             st.info("Agregá insumos a la izquierda.")
