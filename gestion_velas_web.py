@@ -62,18 +62,24 @@ def color_margen(val):
         return ''
 
 # --- FUNCIÓN GENERADORA DE DOCUMENTO IMPRIMIBLE ---
-def generar_html_pedido(pedido_id, fecha_p, fecha_e, cliente, items, total_gral, logo_path="logo.png"):
+def generar_html_pedido(pedido_id, fecha_p, fecha_e, cliente, items, total_gral, sena_val=0.0, logo_path="logo.png"):
     logo_tag = ""
     if os.path.exists(logo_path):
         with open(logo_path, "rb") as img_f:
             b64_logo = base64.b64encode(img_f.read()).decode("utf-8")
             logo_tag = f'<img src="data:image/png;base64,{b64_logo}" style="max-height: 80px; margin-bottom: 10px;" />'
     
+    saldo_pendiente = max(0.0, total_gral - sena_val)
+
     filas_html = ""
     for it in items:
+        detalle_extra = f"<br><small style='color: #666; font-style: italic;'>↳ Detalle: {it['detalle']}</small>" if it.get('detalle') else ""
         filas_html += f"""
         <tr>
-            <td style="padding: 10px 8px; border-bottom: 1px solid #ddd;">{it['producto']}</td>
+            <td style="padding: 10px 8px; border-bottom: 1px solid #ddd;">
+                <strong>{it['producto']}</strong>
+                {detalle_extra}
+            </td>
             <td style="padding: 10px 8px; border-bottom: 1px solid #ddd; text-align: center;">{it['cantidad']:.2f}</td>
             <td style="padding: 10px 8px; border-bottom: 1px solid #ddd; text-align: right;">$ {it['precio_u']:,.2f}</td>
             <td style="padding: 10px 8px; border-bottom: 1px solid #ddd; text-align: right; font-weight: bold;">$ {it['subtotal']:,.2f}</td>
@@ -92,7 +98,10 @@ def generar_html_pedido(pedido_id, fecha_p, fecha_e, cliente, items, total_gral,
             .info-box {{ margin: 25px 0; padding: 15px; background: #fdfdfd; border: 1px solid #eee; border-radius: 6px; }}
             table {{ width: 100%; border-collapse: collapse; margin-top: 15px; }}
             th {{ background: #2c3e50; color: white; padding: 10px 8px; text-align: left; font-size: 14px; }}
-            .total-box {{ text-align: right; margin-top: 25px; font-size: 20px; font-weight: bold; color: #1e824c; }}
+            .totales-wrapper {{ margin-top: 25px; display: flex; justify-content: flex-end; }}
+            .totales-table {{ width: 350px; border-collapse: collapse; }}
+            .totales-table td {{ padding: 6px 10px; font-size: 15px; }}
+            .saldo-destacado {{ font-size: 18px; font-weight: bold; color: #c0392b; border-top: 2px solid #333; }}
             @media print {{
                 .no-print {{ display: none !important; }}
                 body {{ margin: 0; }}
@@ -125,7 +134,7 @@ def generar_html_pedido(pedido_id, fecha_p, fecha_e, cliente, items, total_gral,
         <table>
             <thead>
                 <tr>
-                    <th>Producto</th>
+                    <th>Producto / Especificación</th>
                     <th style="text-align: center;">Cantidad</th>
                     <th style="text-align: right;">Precio Unitario</th>
                     <th style="text-align: right;">Subtotal</th>
@@ -136,12 +145,25 @@ def generar_html_pedido(pedido_id, fecha_p, fecha_e, cliente, items, total_gral,
             </tbody>
         </table>
 
-        <div class="total-box">
-            TOTAL PEDIDO: $ {total_gral:,.2f}
+        <div class="totales-wrapper">
+            <table class="totales-table">
+                <tr>
+                    <td style="text-align: right;"><strong>Total Pedido:</strong></td>
+                    <td style="text-align: right; font-weight: bold;">$ {total_gral:,.2f}</td>
+                </tr>
+                <tr>
+                    <td style="text-align: right; color: #27ae60;"><strong>Seña / Anticipo:</strong></td>
+                    <td style="text-align: right; color: #27ae60; font-weight: bold;">$ {sena_val:,.2f}</td>
+                </tr>
+                <tr class="saldo-destacado">
+                    <td style="text-align: right;">SALDO A COBRAR:</td>
+                    <td style="text-align: right;">$ {saldo_pendiente:,.2f}</td>
+                </tr>
+            </table>
         </div>
 
         <div style="margin-top: 50px; border-top: 1px dashed #aaa; padding-top: 10px; font-size: 12px; text-align: center; color: #888;">
-            Documento emitido para control de fabricación y despacho.
+            Documento emitido para control de fabricación, despacho y cobranza.
         </div>
     </body>
     </html>
@@ -474,7 +496,7 @@ elif menu == "🏭 Fabricación":
         st.rerun()
 
 # ==========================================
-# 📋 4. PEDIDOS DE CLIENTES (NUEVO)
+# 📋 4. PEDIDOS DE CLIENTES (ACTUALIZADO CON SEÑA Y COMENTARIOS)
 # ==========================================
 elif menu == "📋 Pedidos de Clientes":
     st.header("📋 Gestión y Carga de Pedidos")
@@ -482,22 +504,28 @@ elif menu == "📋 Pedidos de Clientes":
     if "items_pedido" not in st.session_state:
         st.session_state["items_pedido"] = []
 
+    # 1. Cabecera general con cliente, fechas y seña
     with st.container(border=True):
         st.subheader("1. Datos Generales del Pedido")
-        c_cli, c_fped, c_fent = st.columns([2, 1, 1])
+        c_cli, c_fped, c_fent, c_sena = st.columns([2, 1, 1, 1])
         cliente = c_cli.text_input("Nombre / Razón Social del Cliente:", placeholder="Ej: Marcela Gómez")
         fecha_ped = c_fped.date_input("Fecha de Pedido:", value=date.today())
         fecha_ent = c_fent.date_input("Compromiso de Entrega:", value=date.today())
+        sena_pago = c_sena.number_input("Seña / Anticipo ($):", min_value=0.0, step=100.0, format="%.2f")
 
+    # 2. Selector de productos con características/comentarios
     with st.container(border=True):
         st.subheader("2. Cargar Productos")
         df_p = db_query("SELECT id, nombre, precio_v, precio_v2, stock_actual FROM productos WHERE UPPER(tipo) = 'FINAL' ORDER BY nombre")
         
         if df_p is not None and not df_p.empty:
-            c_prod, c_lista, c_cant, c_add = st.columns([3, 1.5, 1.5, 1])
+            c_prod, c_lista, c_cant = st.columns([3, 1.5, 1.5])
             prod_sel = c_prod.selectbox("Seleccionar Producto:", df_p['nombre'].tolist())
             tipo_lista = c_lista.selectbox("Lista:", ["Lista 1 (Minorista)", "Lista 2 (Mayorista)"])
             cant_input = c_cant.number_input("Cantidad:", min_value=1.0, value=1.0, step=1.0)
+            
+            c_det, c_add = st.columns([4, 1])
+            detalle_input = c_det.text_input("Características / Comentario del producto (fragancia, color, envase, etc.):", placeholder="Ej: Vainilla y Coco, frasco ámbar, cinta dorada")
             
             prod_row = df_p[df_p['nombre'] == prod_sel].iloc[0]
             precio_base = safe_float(prod_row['precio_v'] if "Lista 1" in tipo_lista else prod_row['precio_v2'])
@@ -506,6 +534,7 @@ elif menu == "📋 Pedidos de Clientes":
                 nuevo_item = {
                     "producto_id": int(prod_row['id']),
                     "producto": prod_sel,
+                    "detalle": detalle_input.strip(),
                     "cantidad": float(cant_input),
                     "precio_u": float(precio_base),
                     "subtotal": float(cant_input * precio_base)
@@ -515,16 +544,18 @@ elif menu == "📋 Pedidos de Clientes":
         else:
             st.warning("No hay productos de tipo FINAL cargados en inventario.")
 
+    # 3. Grilla editable y cálculo interactivo
     if len(st.session_state["items_pedido"]) > 0:
         st.subheader("3. Detalle de Ítems (Edición directa de valores)")
         df_detalle = pd.DataFrame(st.session_state["items_pedido"])
         
         df_editado = st.data_editor(
-            df_detalle[['producto', 'cantidad', 'precio_u', 'subtotal']],
+            df_detalle[['producto', 'detalle', 'cantidad', 'precio_u', 'subtotal']],
             hide_index=True,
             use_container_width=True,
             column_config={
                 "producto": st.column_config.TextColumn("Producto", disabled=True),
+                "detalle": st.column_config.TextColumn("Características / Fragancia / Color"),
                 "cantidad": st.column_config.NumberColumn("Cantidad", min_value=1.0, step=1.0),
                 "precio_u": st.column_config.NumberColumn("Precio Unitario ($)", min_value=0.0, format="$ %.2f"),
                 "subtotal": st.column_config.NumberColumn("Subtotal ($)", min_value=0.0, format="$ %.2f")
@@ -538,6 +569,7 @@ elif menu == "📋 Pedidos de Clientes":
             c_val = safe_float(row['cantidad'])
             p_val = safe_float(row['precio_u'])
             s_val = safe_float(row['subtotal'])
+            det_val = str(row['detalle']).strip() if pd.notna(row['detalle']) else ""
             
             if round(s_val, 2) != round(orig['subtotal'], 2) and round(p_val, 2) == round(orig['precio_u'], 2):
                 final_sub = s_val
@@ -549,6 +581,7 @@ elif menu == "📋 Pedidos de Clientes":
             items_actualizados.append({
                 "producto_id": orig['producto_id'],
                 "producto": orig['producto'],
+                "detalle": det_val,
                 "cantidad": c_val,
                 "precio_u": final_pu,
                 "subtotal": final_sub
@@ -556,15 +589,19 @@ elif menu == "📋 Pedidos de Clientes":
             
         st.session_state["items_pedido"] = items_actualizados
         total_pedido = sum(it['subtotal'] for it in items_actualizados)
+        saldo_pendiente = max(0.0, total_pedido - sena_pago)
         
-        c_tot, c_limpiar = st.columns([3, 1])
-        c_tot.metric("💰 TOTAL GENERAL DEL PEDIDO", f"$ {total_pedido:,.2f}")
-        if c_limpiar.button("🗑️ Vaciar Lista de Ítems", use_container_width=True):
+        c_tot, c_sena_m, c_sal_m, c_limpiar = st.columns([2, 1.5, 1.5, 1])
+        c_tot.metric("💰 TOTAL PEDIDO", f"$ {total_pedido:,.2f}")
+        c_sena_m.metric("💵 SEÑA RECIBIDA", f"$ {sena_pago:,.2f}")
+        c_sal_m.metric("💳 SALDO PENDIENTE", f"$ {saldo_pendiente:,.2f}", delta="- A Cobrar", delta_color="inverse")
+        if c_limpiar.button("🗑️ Vaciar Lista", use_container_width=True):
             st.session_state["items_pedido"] = []
             st.rerun()
 
         st.divider()
 
+        # 4. Confirmación y almacenamiento en DB
         if st.button("💾 Confirmar Pedido y Generar Documento", type="primary", use_container_width=True):
             if not cliente.strip():
                 st.error("⚠️ Ingrese el nombre del cliente para continuar.")
@@ -573,18 +610,24 @@ elif menu == "📋 Pedidos de Clientes":
             else:
                 try:
                     q_ped = """
-                        INSERT INTO pedidos (fecha_pedido, fecha_entrega, cliente, total, estado)
-                        VALUES (:fp, :fe, :cli, :tot, 'Pendiente')
+                        INSERT INTO pedidos (fecha_pedido, fecha_entrega, cliente, total, sena, estado)
+                        VALUES (:fp, :fe, :cli, :tot, :sen, 'Pendiente')
                     """
-                    db_query(q_ped, {"fp": fecha_ped, "fe": fecha_ent, "cli": cliente.strip().upper(), "tot": total_pedido}, commit=True)
+                    db_query(q_ped, {
+                        "fp": fecha_ped, 
+                        "fe": fecha_ent, 
+                        "cli": cliente.strip().upper(), 
+                        "tot": total_pedido,
+                        "sen": sena_pago
+                    }, commit=True)
                     
                     res_id = db_query("SELECT id FROM pedidos ORDER BY id DESC LIMIT 1")
                     pedido_id = int(res_id['id'].iloc[0]) if res_id is not None and not res_id.empty else 1
                     
                     for it in items_actualizados:
                         q_det = """
-                            INSERT INTO pedidos_detalle (pedido_id, producto_id, producto_nombre, cantidad, precio_unitario, subtotal)
-                            VALUES (:pid, :prid, :prnom, :cant, :pu, :sub)
+                            INSERT INTO pedidos_detalle (pedido_id, producto_id, producto_nombre, cantidad, precio_unitario, subtotal, detalle)
+                            VALUES (:pid, :prid, :prnom, :cant, :pu, :sub, :det)
                         """
                         db_query(q_det, {
                             "pid": pedido_id,
@@ -592,11 +635,12 @@ elif menu == "📋 Pedidos de Clientes":
                             "prnom": it['producto'],
                             "cant": it['cantidad'],
                             "pu": it['precio_u'],
-                            "sub": it['subtotal']
+                            "sub": it['subtotal'],
+                            "det": it['detalle']
                         }, commit=True)
                     
                     st.success(f"✅ Pedido #{pedido_id:05d} registrado exitosamente.")
-                    doc_html = generar_html_pedido(pedido_id, fecha_ped, fecha_ent, cliente.strip().upper(), items_actualizados, total_pedido)
+                    doc_html = generar_html_pedido(pedido_id, fecha_ped, fecha_ent, cliente.strip().upper(), items_actualizados, total_pedido, sena_val=sena_pago)
                     st.session_state["doc_generado"] = doc_html
                     st.session_state["doc_id"] = pedido_id
                     st.session_state["items_pedido"] = []
@@ -604,6 +648,7 @@ elif menu == "📋 Pedidos de Clientes":
                 except Exception as e:
                     st.error(f"Error al guardar el pedido: {e}")
 
+    # 5. Vista previa y descarga de comprobante
     if "doc_generado" in st.session_state:
         st.divider()
         st.subheader(f"📄 Documento Generado: Pedido #{st.session_state.get('doc_id', 0):05d}")
@@ -943,27 +988,4 @@ elif menu == "🔄 Actualización Masiva":
                 
                 db_query(
                     """UPDATE productos 
-                       SET costo_u = :c, precio_v = :p1, precio_v2 = :p2 
-                       WHERE id = :id""",
-                    {"c": nuevo_costo, "p1": nuevo_p1, "p2": nuevo_p2, "id": id_f},
-                    commit=True
-                )
-                
-                contador += 1
-                progreso.progress(contador / total_prods)
-            
-            st.success(f"✅ Se actualizaron {contador} productos finales con éxito.")
-            st.cache_data.clear()
-        else:
-            st.warning("No se encontraron productos finales para actualizar.")
-
-    st.divider()
-    st.subheader("Vista Previa de Costos Actuales")
-    vista_previa = db_query("""
-        SELECT p.nombre, p.costo_u as costo_registrado, 
-               (SELECT SUM(r.cantidad * i.costo_u) FROM recetas r JOIN productos i ON r.id_insumo = i.id WHERE r.id_final = p.id) as costo_real_receta
-        FROM productos p 
-        WHERE UPPER(p.tipo) = 'FINAL'
-    """)
-    if vista_previa is not None:
-        st.dataframe(vista_previa, use_container_width=True)
+                       SET costo
