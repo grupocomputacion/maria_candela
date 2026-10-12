@@ -988,4 +988,27 @@ elif menu == "🔄 Actualización Masiva":
                 
                 db_query(
                     """UPDATE productos 
-                       SET costo
+                       SET costo_u = :c, precio_v = :p1, precio_v2 = :p2 
+                       WHERE id = :id""",
+                    {"c": nuevo_costo, "p1": nuevo_p1, "p2": nuevo_p2, "id": id_f},
+                    commit=True
+                )
+                
+                contador += 1
+                progreso.progress(contador / total_prods)
+            
+            st.success(f"✅ Se actualizaron {contador} productos finales con éxito.")
+            st.cache_data.clear()
+        else:
+            st.warning("No se encontraron productos finales para actualizar.")
+
+    st.divider()
+    st.subheader("Vista Previa de Costos Actuales")
+    vista_previa = db_query("""
+        SELECT p.nombre, p.costo_u as costo_registrado, 
+               (SELECT SUM(r.cantidad * i.costo_u) FROM recetas r JOIN productos i ON r.id_insumo = i.id WHERE r.id_final = p.id) as costo_real_receta
+        FROM productos p 
+        WHERE UPPER(p.tipo) = 'FINAL'
+    """)
+    if vista_previa is not None:
+        st.dataframe(vista_previa, use_container_width=True)
