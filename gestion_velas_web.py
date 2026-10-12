@@ -1,7 +1,9 @@
-import streamlit as st
+ import streamlit as st
 import pandas as pd
 from datetime import datetime, date
 import io
+import os
+import base64
 from sqlalchemy import create_engine, text
 
 # --- CONFIGURACIÓN ---
@@ -12,17 +14,24 @@ st.set_page_config(page_title="Velas Candela Pro - Sistema Integral", layout="wi
 # ==========================================
 @st.cache_resource
 def get_engine():
+    if "postgres" not in st.secrets:
+        st.error("❌ Error de configuración: No existe la clave [postgres] en st.secrets.")
+        return None
     try:
-        if "postgres" not in st.secrets:
-            return None
         conn_url = st.secrets["postgres"]["url"].strip().replace(" ", "")
+        if conn_url.startswith("postgres://"):
+            conn_url = conn_url.replace("postgres://", "postgresql+psycopg2://", 1)
+        elif conn_url.startswith("postgresql://") and not conn_url.startswith("postgresql+psycopg2://"):
+            conn_url = conn_url.replace("postgresql://", "postgresql+psycopg2://", 1)
         return create_engine(conn_url, pool_pre_ping=True, pool_recycle=300)
-    except Exception:
+    except Exception as e:
+        st.error(f"❌ Error al crear motor de base de datos: {e}")
         return None
 
 def db_query(query, params=None, commit=False):
     engine = get_engine()
-    if engine is None: return None
+    if engine is None: 
+        return None
     try:
         with engine.connect() as conn:
             if commit:
@@ -32,21 +41,112 @@ def db_query(query, params=None, commit=False):
             else:
                 return pd.read_sql(text(query), conn, params=params)
     except Exception as e:
-        if not commit: st.error(f"Error de BD: {e}")
+        if not commit: 
+            st.error(f"Error de BD: {e}")
         return None
 
 def safe_float(val):
     try:
-        if pd.isna(val) or str(val).strip() == "": return 0.0
+        if pd.isna(val) or str(val).strip() == "": 
+            return 0.0
         return float(val)
-    except: return 0.0
+    except: 
+        return 0.0
 
 # --- FUNCIONES DE ESTILO PARA RENTABILIDAD ---
 def color_margen(val):
     try:
         color = 'red' if val < 20 else 'orange' if val < 40 else 'green'
         return f'color: {color}; font-weight: bold'
-    except: return ''
+    except: 
+        return ''
+
+# --- FUNCIÓN GENERADORA DE DOCUMENTO IMPRIMIBLE ---
+def generar_html_pedido(pedido_id, fecha_p, fecha_e, cliente, items, total_gral, logo_path="logo.png"):
+    logo_tag = ""
+    if os.path.exists(logo_path):
+        with open(logo_path, "rb") as img_f:
+            b64_logo = base64.b64encode(img_f.read()).decode("utf-8")
+            logo_tag = f'<img src="data:image/png;base64,{b64_logo}" style="max-height: 80px; margin-bottom: 10px;" />'
+    
+    filas_html = ""
+    for it in items:
+        filas_html += f"""
+        <tr>
+            <td style="padding: 10px 8px; border-bottom: 1px solid #ddd;">{it['producto']}</td>
+            <td style="padding: 10px 8px; border-bottom: 1px solid #ddd; text-align: center;">{it['cantidad']:.2f}</td>
+            <td style="padding: 10px 8px; border-bottom: 1px solid #ddd; text-align: right;">$ {it['precio_u']:,.2f}</td>
+            <td style="padding: 10px 8px; border-bottom: 1px solid #ddd; text-align: right; font-weight: bold;">$ {it['subtotal']:,.2f}</td>
+        </tr>
+        """
+
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <title>Pedido #{pedido_id:05d} - {cliente}</title>
+        <style>
+            body {{ font-family: 'Helvetica Neue', Arial, sans-serif; margin: 30px; color: #333; }}
+            .header {{ display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #444; padding-bottom: 15px; }}
+            .info-box {{ margin: 25px 0; padding: 15px; background: #fdfdfd; border: 1px solid #eee; border-radius: 6px; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 15px; }}
+            th {{ background: #2c3e50; color: white; padding: 10px 8px; text-align: left; font-size: 14px; }}
+            .total-box {{ text-align: right; margin-top: 25px; font-size: 20px; font-weight: bold; color: #1e824c; }}
+            @media print {{
+                .no-print {{ display: none !important; }}
+                body {{ margin: 0; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="no-print" style="margin-bottom: 20px;">
+            <button onclick="window.print()" style="padding: 10px 20px; font-size: 15px; background-color: #27ae60; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">
+                🖨️ Imprimir / Guardar en PDF
+            </button>
+        </div>
+        <div class="header">
+            <div>
+                {logo_tag}
+                <h2 style="margin: 0; color: #2c3e50;">NOTA DE PEDIDO</h2>
+                <small style="color: #777;">Velas Candela Pro - Sistema Integral</small>
+            </div>
+            <div style="text-align: right;">
+                <h3 style="margin: 0; color: #c0392b;">Pedido N°: {pedido_id:05d}</h3>
+                <p style="margin: 5px 0; font-size: 14px;"><strong>Fecha Emisión:</strong> {fecha_p.strftime('%d/%m/%Y')}</p>
+                <p style="margin: 5px 0; font-size: 14px;"><strong>Compromiso Entrega:</strong> {fecha_e.strftime('%d/%m/%Y')}</p>
+            </div>
+        </div>
+
+        <div class="info-box">
+            <p style="margin: 0; font-size: 16px;"><strong>Cliente / Razón Social:</strong> {cliente}</p>
+        </div>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Producto</th>
+                    <th style="text-align: center;">Cantidad</th>
+                    <th style="text-align: right;">Precio Unitario</th>
+                    <th style="text-align: right;">Subtotal</th>
+                </tr>
+            </thead>
+            <tbody>
+                {filas_html}
+            </tbody>
+        </table>
+
+        <div class="total-box">
+            TOTAL PEDIDO: $ {total_gral:,.2f}
+        </div>
+
+        <div style="margin-top: 50px; border-top: 1px dashed #aaa; padding-top: 10px; font-size: 12px; text-align: center; color: #888;">
+            Documento emitido para control de fabricación y despacho.
+        </div>
+    </body>
+    </html>
+    """
+    return html
 
 # ==========================================
 # 2. MENÚ LATERAL
@@ -56,6 +156,7 @@ menu = st.sidebar.radio("Ir a:", [
     "📦 Inventario y Alta", 
     "🧪 Recetas y Costeo", 
     "🏭 Fabricación",
+    "📋 Pedidos de Clientes",
     "💰 Registro de Compras", 
     "🚀 Registrar Ventas", 
     "📊 Caja y Filtros",
@@ -66,7 +167,7 @@ menu = st.sidebar.radio("Ir a:", [
 ])
 
 # ==========================================
-# 📦 1. INVENTARIO Y ALTA (VERSIÓN CORREGIDA Y ESTABLE)
+# 📦 1. INVENTARIO Y ALTA
 # ==========================================
 if menu == "📦 Inventario y Alta":
     st.subheader("📦 Gestión de Inventario Profesional")
@@ -75,7 +176,6 @@ if menu == "📦 Inventario y Alta":
         st.cache_data.clear()
         st.rerun()
 
-    # --- DEFINICIÓN DE COLUMNAS PARA ALTA Y RESTAURACIÓN ---
     col_alta, col_imp = st.columns(2)
 
     with col_alta.expander("➕ DAR DE ALTA MANUAL"):
@@ -105,7 +205,6 @@ if menu == "📦 Inventario y Alta":
                         db_query("TRUNCATE TABLE recetas, historial_ventas, historial_compras, saldos_caja RESTART IDENTITY CASCADE", commit=True)
                         db_query("TRUNCATE TABLE productos RESTART IDENTITY CASCADE", commit=True)
 
-                        # Carga de Productos
                         df_p = pd.read_excel(xls, 'productos')
                         df_p.columns = [str(col).strip().lower() for col in df_p.columns]
                         for _, row in df_p.iterrows():
@@ -116,13 +215,9 @@ if menu == "📦 Inventario y Alta":
                                       "c": safe_float(row.get('costo_u', 0)), "p1": safe_float(row.get('precio_v', 0)),
                                       "p2": safe_float(row.get('precio_v2', 0))}, commit=True)
 
-                        # Mapas de IDs
                         prods_db = db_query("SELECT id, nombre FROM productos")
                         mapa_id_real = dict(zip(prods_db['nombre'], prods_db['id']))
                         mapa_nombres_excel = dict(zip(df_p['id'], df_p['nombre'].str.strip().str.upper()))
-
-                        # Carga de Recetas, Compras y Ventas (Mantenemos tu lógica probada)
-                        # ... (Se mantiene el bloque de recetas, compras y ventas que ya funcionaba) ...
 
                         status.update(label="✨ ¡Restauración Exitosa!", state="complete", expanded=False)
                         st.cache_data.clear()
@@ -132,14 +227,11 @@ if menu == "📦 Inventario y Alta":
 
     st.divider()
     
-    # --- FILTROS (Siempre visibles) ---
     f1, f2, f3 = st.columns(3)
     f_tipo = f1.selectbox("Filtrar por Tipo:", ["Todos", "insumo", "final", "herramienta", "packaging"])
     f_stock = f2.selectbox("Filtrar por Stock:", ["Todos", "Con Stock", "Sin Stock"])
     f_busq = f3.text_input("🔍 Buscar por Nombre:")
 
-    # --- CONSULTA PRINCIPAL (FUERA DE CUALQUIER IF DE BOTÓN) ---
-    # Esto asegura que la info se levante siempre
     df_inv = db_query("""
         SELECT id, nombre as "Descripción", tipo as "Tipo", unidad as "Unidad", 
                stock_actual as "Stock", costo_u as "Costo", 
@@ -148,7 +240,6 @@ if menu == "📦 Inventario y Alta":
     """)
     
     if df_inv is not None and not df_inv.empty:
-        # Aplicamos filtros sobre el DataFrame cargado
         if f_tipo != "Todos": df_inv = df_inv[df_inv['Tipo'] == f_tipo]
         if f_stock == "Con Stock": df_inv = df_inv[df_inv['Stock'] > 0]
         elif f_stock == "Sin Stock": df_inv = df_inv[df_inv['Stock'] <= 0]
@@ -156,7 +247,6 @@ if menu == "📦 Inventario y Alta":
 
         st.info("💡 Editá directamente en la tabla y presioná 'Guardar Cambios'.")
         
-        # EDITOR DE DATOS
         edited_df = st.data_editor(
             df_inv,
             hide_index=True,
@@ -183,12 +273,11 @@ if menu == "📦 Inventario y Alta":
         st.info("La base de datos de productos está vacía. Usá el expander de Restauración arriba.")
 
 # ==========================================
-# 🧪 2. RECETAS Y COSTEO (VERSIÓN FINAL SANEADA)
+# 🧪 2. RECETAS Y COSTEO
 # ==========================================
 elif menu == "🧪 Recetas y Costeo":
     st.header("🧪 Composición y Costeo")
 
-    # 1. CARGA DE DATOS MAESTROS
     df_f = db_query("SELECT id, nombre, precio_v, precio_v2, costo_u FROM productos WHERE UPPER(tipo) = 'FINAL' ORDER BY nombre")
     df_i = db_query("SELECT id, nombre, unidad, costo_u FROM productos WHERE UPPER(tipo) = 'INSUMO' ORDER BY nombre")
 
@@ -202,8 +291,6 @@ elif menu == "🧪 Recetas y Costeo":
 
     c1, c2 = st.columns([1, 2])
 
-    # --- COLUMNA 1: GRABACIÓN CON VERIFICACIÓN ---
-# --- COLUMNA 1: DIAGNÓSTICO DE GRABACIÓN ---
     with c1:
         st.subheader("Añadir insumo")
         if df_i is not None and not df_i.empty:
@@ -218,39 +305,28 @@ elif menu == "🧪 Recetas y Costeo":
 
             if st.button("🚀 GRABAR AHORA", use_container_width=True, type="primary"):
                 if cant_input > 0:
-                    # PROBAMOS UN INSERT SIMPLE (Si falla, nos dará el error real de Postgres)
-                    # Eliminamos el ON CONFLICT temporalmente para ver si ese es el problema
                     sql_test = "INSERT INTO recetas (id_final, id_insumo, cantidad) VALUES (:idf, :idi, :c)"
-                    
                     try:
                         db_query(sql_test, {"idf": id_f_actual, "idi": id_i_real, "c": float(cant_input)}, commit=True)
-                        
-                        # Verificamos si apareció
                         check = db_query("SELECT id FROM recetas WHERE id_final = :f AND id_insumo = :i", {"f": id_f_actual, "i": id_i_real})
-                        
                         if check is not None and not check.empty:
-                            st.success("✅ ¡POR FIN! Grabado correctamente.")
+                            st.success("✅ ¡Grabado correctamente!")
                             st.cache_data.clear()
                             st.rerun()
                         else:
-                            # Si entra acá, el problema es el COMMIT de la base de datos
-                            st.error("❌ LA DB NO RESPONDE: El INSERT no devolvió error pero el dato no está. Revise en Supabase: Authentication -> Policies -> tabla 'recetas'.")
+                            st.error("❌ La base de datos no confirmó la inserción.")
                     except Exception as e:
-                        # Si el problema es una restricción de clave, acá saltará el mensaje real
-                        st.error(f"❌ ERROR REAL DE POSTGRES: {e}")
+                        st.error(f"❌ Error de base de datos: {e}")
                 else:
                     st.warning("Cantidad debe ser mayor a 0.")
 
-    # --- COLUMNA 2: ESTRUCTURA Y CÁLCULOS (ESTABLE) ---
     with c2:
         st.subheader("Estructura de Costos")
         
-        # Botón de refresco manual
         if st.button("🔄 Forzar Recarga"):
             st.cache_data.clear()
             st.rerun()
 
-        # Query de lectura
         df_rec = db_query(
             """SELECT r.id, p.nombre, r.cantidad, COALESCE(p.unidad, 'un') as unidad, COALESCE(p.costo_u, 0) as costo_u
                FROM recetas r
@@ -258,10 +334,9 @@ elif menu == "🧪 Recetas y Costeo":
                WHERE r.id_final = :idf""", {"idf": id_f_actual}
         )
 
-        costo_fab = 0.0 # Inicializamos para que no se rompa la pantalla
+        costo_fab = 0.0
         
         if df_rec is not None and not df_rec.empty:
-            # Calculamos subtotal de forma segura
             df_rec['subtotal'] = df_rec['cantidad'] * df_rec['costo_u']
             costo_fab = float(df_rec['subtotal'].sum())
             
@@ -279,14 +354,9 @@ elif menu == "🧪 Recetas y Costeo":
                     st.rerun()
 
             st.divider()
-            
-            # --- SECCIÓN DE PRECIOS CON SIMULADOR DINÁMICO ---
-            st.divider()
             st.subheader("📈 Simulador de Precios de Venta")
             st.caption("Calculá tus márgenes antes de impactar en el Inventario")
 
-            # Recuperamos los porcentajes actuales para que el usuario sepa dónde está parado
-            # Margen = ((Precio / Costo) - 1) * 100
             m_l1_act = ((float(row_actual['precio_v']) / costo_fab) - 1) * 100 if costo_fab > 0 and row_actual['precio_v'] else 0.0
             m_l2_act = ((float(row_actual['precio_v2']) / costo_fab) - 1) * 100 if costo_fab > 0 and row_actual['precio_v2'] else 0.0
 
@@ -296,7 +366,6 @@ elif menu == "🧪 Recetas y Costeo":
                 with c_l1:
                     st.markdown("**Lista 1 (Minorista)**")
                     st.write(f"Actual: ${row_actual['precio_v'] if row_actual['precio_v'] else 0:,.2f} ({m_l1_act:,.1f}%)")
-                    
                     tipo_l1 = st.radio("Calcular por:", ["Monto $", "Porcentaje %"], key="tipo_l1", horizontal=True)
                     if tipo_l1 == "Monto $":
                         p1_sim = st.number_input("Precio Final L1:", value=float(row_actual['precio_v']) if row_actual['precio_v'] else 0.0, step=10.0, key="in_p1")
@@ -310,7 +379,6 @@ elif menu == "🧪 Recetas y Costeo":
                 with c_l2:
                     st.markdown("**Lista 2 (Mayorista)**")
                     st.write(f"Actual: ${row_actual['precio_v2'] if row_actual['precio_v2'] else 0:,.2f} ({m_l2_act:,.1f}%)")
-                    
                     tipo_l2 = st.radio("Calcular por:", ["Monto $", "Porcentaje %"], key="tipo_l2", horizontal=True)
                     if tipo_l2 == "Monto $":
                         p2_sim = st.number_input("Precio Final L2:", value=float(row_actual['precio_v2']) if row_actual['precio_v2'] else 0.0, step=10.0, key="in_p2")
@@ -324,7 +392,6 @@ elif menu == "🧪 Recetas y Costeo":
                 st.divider()
                 st.write(f"**RESUMEN A GRABAR:** L1: ${p1_sim:,.2f} | L2: ${p2_sim:,.2f} | Costo: ${costo_fab:,.2f}")
                 
-                # BOTÓN DE IMPACTO FINAL
                 if st.button("💾 CONFIRMAR Y GRABAR EN INVENTARIO", use_container_width=True, type="primary"):
                     try:
                         sql_upd = """
@@ -345,7 +412,7 @@ elif menu == "🧪 Recetas y Costeo":
                     except Exception as e:
                         st.error(f"Error al actualizar: {e}")
         else:
-            st.info("La receta está vacía. Añada insumos a la izquierda.")
+            st.info("La receta está vacía. Añadí insumos a la izquierda.")
 
 # ==========================================
 # 🏭 3. FABRICACIÓN
@@ -363,7 +430,6 @@ elif menu == "🏭 Fabricación":
     row_f    = df_f[df_f['nombre'] == prod_sel].iloc[0]
     id_f     = int(row_f['id'])
 
-    # Mostrar receta y advertencia de stock antes de confirmar
     receta = db_query(
         """SELECT i.nombre, r.cantidad, i.unidad, i.stock_actual,
                   (r.cantidad * i.costo_u) as costo_unit
@@ -381,7 +447,6 @@ elif menu == "🏭 Fabricación":
 
     cantidad = st.number_input("Cantidad de unidades a fabricar:", min_value=1, step=1)
 
-    # Verificar si hay suficiente stock de insumos
     receta['necesario'] = receta['cantidad'] * cantidad
     receta['alcanza']   = receta['stock_actual'] >= receta['necesario']
     sin_stock = receta[~receta['alcanza']]
@@ -396,12 +461,10 @@ elif menu == "🏭 Fabricación":
         st.error(f"⚠️ Stock insuficiente para: {', '.join(sin_stock['nombre'].tolist())}")
 
     if st.button("🚀 Confirmar Fabricación", disabled=not sin_stock.empty, type="primary"):
-        # Sumar stock al producto final
         db_query(
             "UPDATE productos SET stock_actual = stock_actual + :c WHERE id = :id",
             {"c": cantidad, "id": id_f}, commit=True
         )
-        # Descontar insumos
         for _, r in receta.iterrows():
             db_query(
                 "UPDATE productos SET stock_actual = stock_actual - :c WHERE nombre = :n",
@@ -411,7 +474,150 @@ elif menu == "🏭 Fabricación":
         st.rerun()
 
 # ==========================================
-# 💰 4. REGISTRO DE COMPRAS
+# 📋 4. PEDIDOS DE CLIENTES (NUEVO)
+# ==========================================
+elif menu == "📋 Pedidos de Clientes":
+    st.header("📋 Gestión y Carga de Pedidos")
+    
+    if "items_pedido" not in st.session_state:
+        st.session_state["items_pedido"] = []
+
+    with st.container(border=True):
+        st.subheader("1. Datos Generales del Pedido")
+        c_cli, c_fped, c_fent = st.columns([2, 1, 1])
+        cliente = c_cli.text_input("Nombre / Razón Social del Cliente:", placeholder="Ej: Marcela Gómez")
+        fecha_ped = c_fped.date_input("Fecha de Pedido:", value=date.today())
+        fecha_ent = c_fent.date_input("Compromiso de Entrega:", value=date.today())
+
+    with st.container(border=True):
+        st.subheader("2. Cargar Productos")
+        df_p = db_query("SELECT id, nombre, precio_v, precio_v2, stock_actual FROM productos WHERE UPPER(tipo) = 'FINAL' ORDER BY nombre")
+        
+        if df_p is not None and not df_p.empty:
+            c_prod, c_lista, c_cant, c_add = st.columns([3, 1.5, 1.5, 1])
+            prod_sel = c_prod.selectbox("Seleccionar Producto:", df_p['nombre'].tolist())
+            tipo_lista = c_lista.selectbox("Lista:", ["Lista 1 (Minorista)", "Lista 2 (Mayorista)"])
+            cant_input = c_cant.number_input("Cantidad:", min_value=1.0, value=1.0, step=1.0)
+            
+            prod_row = df_p[df_p['nombre'] == prod_sel].iloc[0]
+            precio_base = safe_float(prod_row['precio_v'] if "Lista 1" in tipo_lista else prod_row['precio_v2'])
+            
+            if c_add.button("➕ Agregar", use_container_width=True, type="secondary"):
+                nuevo_item = {
+                    "producto_id": int(prod_row['id']),
+                    "producto": prod_sel,
+                    "cantidad": float(cant_input),
+                    "precio_u": float(precio_base),
+                    "subtotal": float(cant_input * precio_base)
+                }
+                st.session_state["items_pedido"].append(nuevo_item)
+                st.rerun()
+        else:
+            st.warning("No hay productos de tipo FINAL cargados en inventario.")
+
+    if len(st.session_state["items_pedido"]) > 0:
+        st.subheader("3. Detalle de Ítems (Edición directa de valores)")
+        df_detalle = pd.DataFrame(st.session_state["items_pedido"])
+        
+        df_editado = st.data_editor(
+            df_detalle[['producto', 'cantidad', 'precio_u', 'subtotal']],
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "producto": st.column_config.TextColumn("Producto", disabled=True),
+                "cantidad": st.column_config.NumberColumn("Cantidad", min_value=1.0, step=1.0),
+                "precio_u": st.column_config.NumberColumn("Precio Unitario ($)", min_value=0.0, format="$ %.2f"),
+                "subtotal": st.column_config.NumberColumn("Subtotal ($)", min_value=0.0, format="$ %.2f")
+            },
+            key="editor_pedidos"
+        )
+        
+        items_actualizados = []
+        for idx, row in df_editado.iterrows():
+            orig = st.session_state["items_pedido"][idx]
+            c_val = safe_float(row['cantidad'])
+            p_val = safe_float(row['precio_u'])
+            s_val = safe_float(row['subtotal'])
+            
+            if round(s_val, 2) != round(orig['subtotal'], 2) and round(p_val, 2) == round(orig['precio_u'], 2):
+                final_sub = s_val
+                final_pu = s_val / c_val if c_val > 0 else 0.0
+            else:
+                final_sub = c_val * p_val
+                final_pu = p_val
+
+            items_actualizados.append({
+                "producto_id": orig['producto_id'],
+                "producto": orig['producto'],
+                "cantidad": c_val,
+                "precio_u": final_pu,
+                "subtotal": final_sub
+            })
+            
+        st.session_state["items_pedido"] = items_actualizados
+        total_pedido = sum(it['subtotal'] for it in items_actualizados)
+        
+        c_tot, c_limpiar = st.columns([3, 1])
+        c_tot.metric("💰 TOTAL GENERAL DEL PEDIDO", f"$ {total_pedido:,.2f}")
+        if c_limpiar.button("🗑️ Vaciar Lista de Ítems", use_container_width=True):
+            st.session_state["items_pedido"] = []
+            st.rerun()
+
+        st.divider()
+
+        if st.button("💾 Confirmar Pedido y Generar Documento", type="primary", use_container_width=True):
+            if not cliente.strip():
+                st.error("⚠️ Ingrese el nombre del cliente para continuar.")
+            elif len(items_actualizados) == 0:
+                st.error("⚠️ Debe incluir al menos un producto.")
+            else:
+                try:
+                    q_ped = """
+                        INSERT INTO pedidos (fecha_pedido, fecha_entrega, cliente, total, estado)
+                        VALUES (:fp, :fe, :cli, :tot, 'Pendiente')
+                    """
+                    db_query(q_ped, {"fp": fecha_ped, "fe": fecha_ent, "cli": cliente.strip().upper(), "tot": total_pedido}, commit=True)
+                    
+                    res_id = db_query("SELECT id FROM pedidos ORDER BY id DESC LIMIT 1")
+                    pedido_id = int(res_id['id'].iloc[0]) if res_id is not None and not res_id.empty else 1
+                    
+                    for it in items_actualizados:
+                        q_det = """
+                            INSERT INTO pedidos_detalle (pedido_id, producto_id, producto_nombre, cantidad, precio_unitario, subtotal)
+                            VALUES (:pid, :prid, :prnom, :cant, :pu, :sub)
+                        """
+                        db_query(q_det, {
+                            "pid": pedido_id,
+                            "prid": it['producto_id'],
+                            "prnom": it['producto'],
+                            "cant": it['cantidad'],
+                            "pu": it['precio_u'],
+                            "sub": it['subtotal']
+                        }, commit=True)
+                    
+                    st.success(f"✅ Pedido #{pedido_id:05d} registrado exitosamente.")
+                    doc_html = generar_html_pedido(pedido_id, fecha_ped, fecha_ent, cliente.strip().upper(), items_actualizados, total_pedido)
+                    st.session_state["doc_generado"] = doc_html
+                    st.session_state["doc_id"] = pedido_id
+                    st.session_state["items_pedido"] = []
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error al guardar el pedido: {e}")
+
+    if "doc_generado" in st.session_state:
+        st.divider()
+        st.subheader(f"📄 Documento Generado: Pedido #{st.session_state.get('doc_id', 0):05d}")
+        
+        st.download_button(
+            label="📥 Descargar Nota de Pedido (.html / Imprimible)",
+            data=st.session_state["doc_generado"],
+            file_name=f"Pedido_{st.session_state.get('doc_id', 0):05d}.html",
+            mime="text/html"
+        )
+        st.components.v1.html(st.session_state["doc_generado"], height=650, scrolling=True)
+
+# ==========================================
+# 💰 5. REGISTRO DE COMPRAS
 # ==========================================
 elif menu == "💰 Registro de Compras":
     st.header("💰 Compra de Insumos / Mercadería")
@@ -450,7 +656,6 @@ elif menu == "💰 Registro de Compras":
             if ok:
                 st.success(f"✅ Stock de **{ins_nom}** actualizado. Nuevo costo: $ {nuevo_costo:,.4f}")
 
-    # Historial simple de stock bajo
     st.divider()
     st.subheader("⚠️ Insumos con stock bajo (< 100)")
     df_bajo = db_query(
@@ -463,7 +668,7 @@ elif menu == "💰 Registro de Compras":
         st.success("Todos los insumos tienen stock suficiente.")
 
 # ==========================================
-# 🚀 5. REGISTRAR VENTAS (ACTUALIZADO)
+# 🚀 6. REGISTRAR VENTAS
 # ==========================================
 elif menu == "🚀 Registrar Ventas":
     st.header("🚀 Nueva Venta")
@@ -482,7 +687,7 @@ elif menu == "🚀 Registrar Ventas":
 
     p1 = safe_float(row['precio_v'])
     p2 = safe_float(row['precio_v2'])
-    costo_u_actual = safe_float(row['costo_u']) # Capturamos el costo actual para la historia
+    costo_u_actual = safe_float(row['costo_u'])
 
     col_info, col_form = st.columns([1, 2])
     col_info.metric("📦 Stock disponible", f"{row['stock_actual']} un.")
@@ -491,9 +696,7 @@ elif menu == "🚀 Registrar Ventas":
 
     with col_form:
         with st.form("venta"):
-            # AGREGADO: Selector de fecha para permitir edición/registro retroactivo
             fecha_v = st.date_input("Fecha de la venta:", value=date.today())
-            
             lista = st.radio("Lista de Precios:", ["Minorista (L1)", "Mayorista (L2)"], horizontal=True)
             cant  = st.number_input("Cantidad:", min_value=1.0, step=1.0)
 
@@ -514,7 +717,6 @@ elif menu == "🚀 Registrar Ventas":
                 if cant > safe_float(row['stock_actual']):
                     st.error(f"❌ Stock insuficiente. Disponible: {row['stock_actual']} unidades.")
                 else:
-                    # Guardamos la venta incluyendo el costo_momento para rentabilidad real
                     ok = db_query(
                         """INSERT INTO historial_ventas
                              (fecha, producto, cantidad, total_venta, metodo_pago, costo_momento)
@@ -525,28 +727,24 @@ elif menu == "🚀 Registrar Ventas":
                     )
                     
                     if ok:
-                        # 1. Descontamos Stock
                         db_query(
                             "UPDATE productos SET stock_actual = stock_actual - :c WHERE id = :id",
                             {"c": cant, "id": int(row['id'])}, commit=True
                         )
                         
-                        # 2. Impactamos en Flujo de Caja (Efectivo vs Banco)
                         if metodo == "Efectivo":
                             db_query("UPDATE saldos_caja SET saldo = saldo + :t WHERE tipo_cuenta = 'Efectivo'", 
                                      {"t": total_cobrar}, commit=True)
                         elif metodo in ["Transferencia", "Mercado Pago"]:
                             db_query("UPDATE saldos_caja SET saldo = saldo + :t WHERE tipo_cuenta = 'Banco'", 
                                      {"t": total_cobrar}, commit=True)
-                        # Nota: Si es tarjeta, no suma a efectivo/banco hasta que se liquide, 
-                        # pero queda registrado en el historial.
 
                         st.success(f"✅ Venta registrada: {cant} x {sel_p} = $ {total_cobrar:,.2f}")
-                        st.cache_data.clear() # Limpiamos caché para ver stock actualizado
+                        st.cache_data.clear()
                         st.rerun()
 
 # ==========================================
-# 📊 6. CAJA Y FILTROS POR PERÍODO
+# 📊 7. CAJA Y FILTROS POR PERÍODO
 # ==========================================
 elif menu == "📊 Caja y Filtros":
     st.header("📊 Análisis de Caja y Períodos")
@@ -557,7 +755,6 @@ elif menu == "📊 Caja y Filtros":
     df_v = db_query("SELECT * FROM historial_ventas WHERE fecha BETWEEN :f1 AND :f2 ORDER BY fecha DESC", {"f1": f_inicio, "f2": f_fin})
 
     if df_v is not None and not df_v.empty:
-        # Totales por método
         efectivo = df_v[df_v['metodo_pago'].str.contains("Efectivo", na=False, case=False)]['total_venta'].sum()
         banco = df_v[df_v['metodo_pago'].str.contains("Transferencia|Banco|MP|Mercado", na=False, case=False)]['total_venta'].sum()
         tarjeta = df_v[df_v['metodo_pago'].str.contains("Tarjeta|Crédito", na=False, case=False)]['total_venta'].sum()
@@ -573,7 +770,7 @@ elif menu == "📊 Caja y Filtros":
         st.info("No hay movimientos en este período.")
 
 # ==========================================
-# 📈 7. RENTABILIDAD (CORREGIDA)
+# 📈 8. RENTABILIDAD
 # ==========================================
 elif menu == "📈 Rentabilidad":
     st.header("📈 Análisis de Margen y Rentabilidad")
@@ -585,7 +782,6 @@ elif menu == "📈 Rentabilidad":
         df_r['Ganancia L2 ($)'] = df_r['precio_v2'] - df_r['costo_u']
         df_r['Margen L2 (%)'] = (df_r['Ganancia L2 ($)'] / df_r['precio_v2'] * 100).fillna(0)
         
-        # Aplicamos el estilo nuevo (.map en lugar de .applymap)
         styled = df_r.style.format({
             "costo_u": "$ {:.2f}", "precio_v": "$ {:.2f}", "precio_v2": "$ {:.2f}",
             "Ganancia L1 ($)": "$ {:.2f}", "Ganancia L2 ($)": "$ {:.2f}",
@@ -597,17 +793,20 @@ elif menu == "📈 Rentabilidad":
         st.warning("Asegurate de tener recetas cargadas con costos para ver este análisis.")
 
 # ==========================================
-# 💰 8. CONTROL DE FLUJO DE CAJA
+# 💰 9. CONTROL DE FLUJO DE CAJA
 # ==========================================
 elif menu == "💰 Flujo de Caja":
     st.header("💰 Control de Flujo de Caja")
     
-    # Visualización de métricas
     df_saldos = db_query("SELECT tipo_cuenta, saldo FROM saldos_caja")
-    if df_saldos is not None:
-        efectivo = df_saldos[df_saldos['tipo_cuenta'] == 'Efectivo']['saldo'].values[0]
-        banco = df_saldos[df_saldos['tipo_cuenta'] == 'Banco']['saldo'].values[0]
-        deuda_tc = df_saldos[df_saldos['tipo_cuenta'] == 'Deuda_TC']['saldo'].values[0]
+    if df_saldos is not None and not df_saldos.empty:
+        efectivo_rows = df_saldos[df_saldos['tipo_cuenta'] == 'Efectivo']['saldo'].values
+        banco_rows = df_saldos[df_saldos['tipo_cuenta'] == 'Banco']['saldo'].values
+        deuda_rows = df_saldos[df_saldos['tipo_cuenta'] == 'Deuda_TC']['saldo'].values
+        
+        efectivo = efectivo_rows[0] if len(efectivo_rows) > 0 else 0.0
+        banco = banco_rows[0] if len(banco_rows) > 0 else 0.0
+        deuda_tc = deuda_rows[0] if len(deuda_rows) > 0 else 0.0
         
         c1, c2, c3 = st.columns(3)
         c1.metric("💵 Efectivo", f"$ {efectivo:,.2f}")
@@ -642,21 +841,17 @@ elif menu == "💰 Flujo de Caja":
                 st.success("Deuda amortizada.")
                 st.rerun()
 
-
 # ==========================================
-# 📊 9. ANÁLISIS DE RESULTADOS (VERSIÓN PRO)
+# 📊 10. ANÁLISIS DE RESULTADOS
 # ==========================================
 elif menu == "📊 Análisis de Resultados":
     st.header("📊 Análisis de Negocio y Valoración")
     
-    # 1. CÁLCULO DE RENTABILIDAD REAL
     df_v = db_query("SELECT fecha, producto, cantidad, total_venta, costo_momento FROM historial_ventas")
     
     if df_v is not None and not df_v.empty:
         df_v['fecha'] = pd.to_datetime(df_v['fecha'])
-        # Si el costo_momento es 0, intentamos recuperarlo del costo actual del producto
         df_v['Ganancia'] = df_v['total_venta'] - (df_v['cantidad'] * df_v['costo_momento'])
-        
         df_v['Mes'] = df_v['fecha'].dt.strftime('%Y-%m')
         resumen = df_v.groupby('Mes').agg({
             'total_venta': 'sum',
@@ -668,29 +863,24 @@ elif menu == "📊 Análisis de Resultados":
     else:
         st.warning("⚠️ No hay datos de ventas para analizar rentabilidad.")
 
-    # 2. VALORACIÓN DE STOCK Y PROYECCIÓN (FORECAST)
     st.divider()
     st.subheader("📦 Valoración y Proyección de Stock")
     
-    # Traemos solo productos finales para la proyección de ventas
     df_stk = db_query("""
         SELECT nombre, stock_actual, costo_u, precio_v, precio_v2 
         FROM productos 
         WHERE stock_actual > 0 AND UPPER(tipo) = 'FINAL'
     """)
     
-    # Traemos insumos solo para el capital inmovilizado
     df_ins = db_query("SELECT stock_actual, costo_u FROM productos WHERE stock_actual > 0 AND UPPER(tipo) = 'INSUMO'")
 
     if df_stk is not None and not df_stk.empty:
-        # Cálculos de Valoración
         cap_finales = (df_stk['stock_actual'] * df_stk['costo_u']).sum()
-        cap_insumos = (df_ins['stock_actual'] * df_ins['costo_u']).sum() if df_ins is not None else 0
+        cap_insumos = (df_ins['stock_actual'] * df_ins['costo_u']).sum() if df_ins is not None else 0.0
         
         forecast_l1 = (df_stk['stock_actual'] * df_stk['precio_v']).sum()
         forecast_l2 = (df_stk['stock_actual'] * df_stk['precio_v2']).sum()
 
-        # Métricas principales
         c1, c2, c3 = st.columns(3)
         c1.metric("📉 Capital en Finales", f"$ {cap_finales:,.2f}")
         c2.metric("💰 Proyección Lista 1", f"$ {forecast_l1:,.2f}")
@@ -698,7 +888,6 @@ elif menu == "📊 Análisis de Resultados":
         
         st.info(f"📦 **Capital Total Inmovilizado (Insumos + Finales):** $ {cap_finales + cap_insumos:,.2f}")
 
-        # Tabla de Proyección Detallada
         df_stk['Total L1'] = df_stk['stock_actual'] * df_stk['precio_v']
         df_stk['Total L2'] = df_stk['stock_actual'] * df_stk['precio_v2']
         
@@ -718,14 +907,13 @@ elif menu == "📊 Análisis de Resultados":
         st.error("No se encontraron productos de tipo 'FINAL' con stock para proyectar.")
 
 # ==========================================
-# 🔄 10. ACTUALIZACIÓN MASIVA DE PRECIOS
+# 🔄 11. ACTUALIZACIÓN MASIVA DE PRECIOS
 # ==========================================
 elif menu == "🔄 Actualización Masiva":
     st.header("🔄 Recalcular Precios de Venta")
     st.info("Esta función recorre todos los productos FINALES, suma sus costos actuales de insumos y actualiza los precios L1 y L2 manteniendo tus porcentajes de ganancia.")
 
     if st.button("🚀 Iniciar Recálculo de Todo el Catálogo", use_container_width=True, type="primary"):
-        # 1. Obtenemos todos los productos finales
         productos_finales = db_query("SELECT id, nombre, precio_v, precio_v2, costo_u FROM productos WHERE UPPER(tipo) = 'FINAL'")
         
         if productos_finales is not None and not productos_finales.empty:
@@ -736,7 +924,6 @@ elif menu == "🔄 Actualización Masiva":
             for index, prod in productos_finales.iterrows():
                 id_f = int(prod['id'])
                 
-                # 2. Calculamos el nuevo costo sumando la receta
                 query_costo = """
                     SELECT SUM(r.cantidad * COALESCE(p.costo_u, 0)) as nuevo_costo
                     FROM recetas r
@@ -746,19 +933,14 @@ elif menu == "🔄 Actualización Masiva":
                 res_costo = db_query(query_costo, {"idf": id_f})
                 nuevo_costo = float(res_costo['nuevo_costo'].iloc[0]) if res_costo is not None and not res_costo['nuevo_costo'].isnull().all() else 0.0
                 
-                # 3. Recuperamos los porcentajes actuales
-                # Si el precio actual es > costo actual, calculamos el % que el usuario venía usando
                 costo_viejo = float(prod['costo_u']) if prod['costo_u'] and prod['costo_u'] > 0 else nuevo_costo
                 
-                # Calculamos el margen actual para L1 y L2 (si no hay, asumimos 0)
                 margen_l1 = (float(prod['precio_v']) / costo_viejo) if costo_viejo > 0 and prod['precio_v'] else 1.0
                 margen_l2 = (float(prod['precio_v2']) / costo_viejo) if costo_viejo > 0 and prod['precio_v2'] else 1.0
                 
-                # 4. Aplicamos los márgenes al NUEVO COSTO
                 nuevo_p1 = nuevo_costo * margen_l1
                 nuevo_p2 = nuevo_costo * margen_l2
                 
-                # 5. Grabamos en la base de datos
                 db_query(
                     """UPDATE productos 
                        SET costo_u = :c, precio_v = :p1, precio_v2 = :p2 
@@ -777,7 +959,6 @@ elif menu == "🔄 Actualización Masiva":
 
     st.divider()
     st.subheader("Vista Previa de Costos Actuales")
-    # Mostramos una tabla rápida para que el usuario vea qué se va a actualizar
     vista_previa = db_query("""
         SELECT p.nombre, p.costo_u as costo_registrado, 
                (SELECT SUM(r.cantidad * i.costo_u) FROM recetas r JOIN productos i ON r.id_insumo = i.id WHERE r.id_final = p.id) as costo_real_receta
@@ -785,4 +966,4 @@ elif menu == "🔄 Actualización Masiva":
         WHERE UPPER(p.tipo) = 'FINAL'
     """)
     if vista_previa is not None:
-        st.dataframe(vista_previa, use_container_width=True)        
+        st.dataframe(vista_previa, use_container_width=True)
